@@ -1,4 +1,4 @@
-# Reproduction code for "History-Aware Conformal Prediction Sets for Censored Time-to-Event Outcomes"
+# History-Aware Conformal Prediction Sets for Censored Time-to-Event Outcomes
 
 This repository contains code for reproducing the simulation and data analysis in "History-Aware Conformal Prediction Sets for Censored Time-to-Event Outcomes" by Yuyao Wang, Alexander W. Levis, Shu Yang, Larry Han (2026),  [arXiv:2605.06581](https://arxiv.org/abs/2605.06581)
 
