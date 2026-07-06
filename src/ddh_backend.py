@@ -330,6 +330,13 @@ def fit_predict(
     if hasattr(torch.backends, "cudnn"):
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
+    # Pin CPU thread count for cross-run reproducibility: multi-threaded reduction
+    # order is not deterministic, so results can drift slightly between runs (and
+    # across machines) at the default thread count. Default 1; override with
+    # args["torch_num_threads"] (0/None keeps PyTorch's default).
+    _n_threads = args.get("torch_num_threads", 1)
+    if _n_threads is not None and int(_n_threads) > 0:
+        torch.set_num_threads(int(_n_threads))
 
     # Build trajectory tensors from full long data for risk-set ids at tau.
     include_time_features = bool(args.get("include_time_features", True))
