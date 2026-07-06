@@ -294,6 +294,14 @@ build_bootCP_static_testonly <- function(results_bounds_tau0, tau_grid,
             
             keep <- which(df0[[TT.col]] > tau)
             dfk <- df0[keep, , drop = FALSE]
+            # Extreme case: nobody in the test set survives past tau. The bare
+            # `dfk$tau <- tau` below would fail on a 0-row data frame with a
+            # cryptic "replacement has 1 row, data has 0"; error informatively.
+            if (nrow(dfk) == 0) {
+                stop("build_bootCP_static_testonly(): no test subjects with ",
+                     TT.col, " > tau = ", tau, " (replication ", r,
+                     "); cannot compute static bounds at this tau.")
+            }
             dfk$tau <- tau
             
             if (X.col %in% names(dfk)) {
@@ -369,6 +377,13 @@ build_bootCP_static_testonly_ipcw <- function(results_bounds_tau0, tau_grid,
             # survivors at tau: observed time X > tau
             keep <- which(df0[[X.col]] > tau)
             dfk <- df0[keep, , drop = FALSE]
+            # Extreme case: no observed survivors past tau (see the analogous
+            # guard in build_bootCP_static_testonly); error informatively.
+            if (nrow(dfk) == 0) {
+                stop("build_bootCP_static_testonly_ipcw(): no test subjects with ",
+                     X.col, " > tau = ", tau, " (replication ", r,
+                     "); cannot compute static bounds at this tau.")
+            }
             dfk$tau <- tau
             
             dfk$covered_X <- as.integer(dfk$lower <= dfk[[X.col]] & dfk[[X.col]] <= dfk$upper)
