@@ -24,8 +24,16 @@ subject_summary <- function(dat, id.name, stop.name, event.name, event.C.name, s
 # returns: numeric vector length N of S(t_rel[i] | newdata[i,]) or a matrix size N*length(t_rel) of S(t_rel[j] | newdata[i,])
 predict_surv_coxph_fast <- function(fit, S0_step, newdata, t_rel, matrix = FALSE) {
     t_rel <- pmax(0, t_rel)
-    
+
     X <- stats::model.matrix(fit, newdata)      # N x p
+    # model.matrix() silently DROPS rows with NA covariates; a shorter eta would
+    # then be recycled against S0 below, silently assigning survival probabilities
+    # to the wrong subjects. Fail loudly instead (the xgb/grf paths already do).
+    if (nrow(X) != nrow(newdata)) {
+        stop("predict_surv_coxph_fast(): model.matrix dropped ",
+             nrow(newdata) - nrow(X), " of ", nrow(newdata),
+             " rows (missing covariate values in newdata are not supported).")
+    }
     eta <- drop(X %*% stats::coef(fit))         # N
     r <- exp(eta)                               
     S0 <- S0_step(t_rel)                         # N
@@ -1402,10 +1410,17 @@ compute_Hk_at_tk <- function(dat_long, visit_times, k,
         
         dat_tj <- dat_tj[, setdiff(names(dat_tj), c("X","Delta","DeltaC")), drop=FALSE]  # if they exist
         dat_tj <- merge(dat_tj, summ, by = id.name, all.x = TRUE, sort = FALSE)
-        
+
         # align to ids[idx]
-        dat_tj <- dat_tj[match(ids[idx], dat_tj[[id.name]]), , drop = FALSE]
-        
+        idx_align <- match(ids[idx], dat_tj[[id.name]])
+        if (anyNA(idx_align)) {
+            miss_ids <- ids[idx][is.na(idx_align)]
+            stop("compute_Hk_at_tk(): no interval-", j, " covariate row for some at-risk ids ",
+                 "(an unmatched id would inject an all-NA row and silently corrupt H_k). Example: ",
+                 paste(utils::head(miss_ids, 10), collapse = ", "))
+        }
+        dat_tj <- dat_tj[idx_align, , drop = FALSE]
+
         t_eval_abs <- pmin(X[idx], if (j < K) visit_times[j + 1] else X[idx])
         Gj <- predict_Gk(Gfits[[j]], dat_tj, t_eval_abs)
         
@@ -3300,18 +3315,33 @@ make_Sk_predictor_cache <- function(Sfit_k, newdata_tk) {
             out$risk_mult <- rep(1, n)
         } else {
             Xmat <- stats::model.matrix(fit, newdata_tk)
+            # model.matrix() silently drops NA-covariate rows; a short risk_mult
+            # would be recycled by sweep()/^ downstream, attributing survival
+            # probabilities to the wrong subjects. Fail loudly (as xgb/grf do).
+            if (nrow(Xmat) != n) {
+                stop("make_Sk_predictor_cache(): model.matrix dropped ",
+                     n - nrow(Xmat), " of ", n,
+                     " rows (missing covariate values are not supported for cox prediction).")
+            }
             eta  <- drop(Xmat %*% beta)
             out$risk_mult <- exp(eta)
         }
-        
+
     } else if (Sfit_k$model == "rsf") {
         if (!requireNamespace("randomForestSRC", quietly = TRUE)) {
             stop("make_Sk_predictor_cache(): package 'randomForestSRC' required for RSF.")
         }
-        
+
         pr <- predict(Sfit_k$fit, newdata = newdata_tk)
         out$grid <- pr$time.interest
         out$Smat <- pr$survival  # n x length(grid)
+        # predict.rfsrc() na.action default omits NA-covariate rows; a short Smat
+        # would be silently recycled by sweep() downstream. Fail loudly instead.
+        if (is.null(out$Smat) || NROW(out$Smat) != n) {
+            stop("make_Sk_predictor_cache(): rsf prediction returned ",
+                 NROW(out$Smat), " rows for ", n,
+                 " subjects (missing covariate values are not supported for rsf prediction).")
+        }
         
     } else if (Sfit_k$model == "hal") {
         hal_bundle <- list(
