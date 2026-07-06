@@ -1303,29 +1303,15 @@ predict_G_from_Gk_matrix <- function(
                 t_rel <- pmax(0, pmin(t_abs, t_k1) - t_k)
                 gk$S0_step(rep(t_rel, length(rows)))^r[rows]
             }
-        } else if (gk$model == "rsf") {
-            if (!requireNamespace("randomForestSRC", quietly = TRUE)) {
-                stop("predict_Gk(): package 'randomForestSRC' required for model='rsf'.")
-            }
-            if (!is.null(gk$cov_use)) {
-                miss <- setdiff(gk$cov_use, names(datk))
-                if (length(miss) > 0) {
-                    stop("predict_Gk(): newdata_tk is missing covariates: ", paste(miss, collapse = ", "))
-                }
-            }
-            pred <- predict(gk$fit, newdata = datk)
-            grid <- pred$time.interest
-            S <- pred$survival
-            if (NROW(S) != nrow(datk)) {
-                stop("predict_G_from_Gk_matrix(): rsf prediction returned ", NROW(S),
-                     " rows for ", nrow(datk),
-                     " cached rows (missing covariate values are not supported).")
-            }
-            function(rows, t_abs) {
-                t_rel <- pmax(0, pmin(t_abs, t_k1) - t_k)
-                eval_step_surv(S[rows, , drop = FALSE], grid, t_rel = rep(t_rel, length(rows)))
-            }
         } else {
+            # NOTE: no hoisted evaluator for 'rsf' (and other backends), on purpose.
+            # predict.rfsrc() consumes the R RNG stream on every call, so replacing
+            # the per-column predict calls with a single per-interval call changes
+            # the number of RNG draws and thereby shifts the seeds of all DOWNSTREAM
+            # randomized fits in the same replication (bitwise-different results,
+            # statistically equivalent). To keep outputs bit-identical to the
+            # original implementation, rsf uses the per-column predict_Gk() fallback.
+            # The cox/km evaluators above consume no RNG (verified), so they are safe.
             NULL
         }
     }
@@ -3734,7 +3720,7 @@ predict_Sk_cache_rowtime_matrix <- function(cache, t_abs_mat, left_limit = FALSE
 build_h_tau_matrix_cal <- function(
         dat_cal, dat_cal_tau,
         pred_time, pred_surv_cal,
-        visit_times, tau, theta, alpha,
+        visit_times, tau, theta = NULL, alpha,
         start.name, stop.name, event.name, event.C.name, id.name,
         Gfits, Sfits,
         Xi_fits = NULL,
@@ -3745,8 +3731,16 @@ build_h_tau_matrix_cal <- function(
         row_data = c("all", "tau"),
         mask_after_X = TRUE,
         after_X_value = NA_real_,
-        tol = 1e-12
+        tol = 1e-12,
+        precomp = NULL,
+        precomp_only = FALSE
 ) {
+    # precomp: an optional list of theta-INDEPENDENT objects returned by a prior
+    #   call with precomp_only = TRUE. Passing it back avoids recomputing the
+    #   subject summary, G(tau|.), the interval map, the S_k predictor caches,
+    #   and the S_k(u-|L_k) denominators on every theta of the AIPCW grid search
+    #   (these do not depend on theta). Results are bit-identical either way.
+    # precomp_only: build and return that cache without needing theta.
     row_data <- match.arg(row_data)
     ## ---------------- checks ----------------
     if (!is.data.frame(dat_cal) || !is.data.frame(dat_cal_tau)) {
@@ -3761,13 +3755,15 @@ build_h_tau_matrix_cal <- function(
     if (length(pred_time) != ncol(pred_surv_cal)) {
         stop("build_h_tau_matrix_cal(): length(pred_time) must equal ncol(pred_surv_cal).")
     }
-    if (length(theta) != 1L || !is.finite(theta) || theta < 0 || theta > 0.5) {
-        stop("build_h_tau_matrix_cal(): theta must be a scalar in [0, 0.5].")
+    if (!isTRUE(precomp_only)) {
+        if (length(theta) != 1L || !is.finite(theta) || theta < 0 || theta > 0.5) {
+            stop("build_h_tau_matrix_cal(): theta must be a scalar in [0, 0.5].")
+        }
     }
     if (length(alpha) != 1L || !is.finite(alpha) || alpha <= 0 || alpha >= 1) {
         stop("build_h_tau_matrix_cal(): alpha must be a scalar in (0, 1).")
     }
-    
+
     K <- length(visit_times)
     if (K == 0L) stop("build_h_tau_matrix_cal(): visit_times must be nonempty.")
     nu <- match(tau, visit_times)
@@ -3776,13 +3772,20 @@ build_h_tau_matrix_cal <- function(
     if (length(Sfits) < K) stop("build_h_tau_matrix_cal(): Sfits length < length(visit_times).")
     if (length(Gfits) < K) stop("build_h_tau_matrix_cal(): Gfits length < length(visit_times).")
     
+    ## ============ theta-INDEPENDENT precompute (reused across the theta grid) ============
+    ## Built once when precomp is NULL; otherwise the caller passes it back to skip
+    ## the subject summary, G(tau), interval map, S_k predictor caches and S_k(u-)
+    ## denominators (none depend on theta). local({}) keeps the scratch variables
+    ## contained and returns only the cache list.
+    pc <- if (is.null(precomp)) local({
+
     # default evaluation grid = all absolute jump times from Gfits
     if (is.null(time_vec)) {
         time_vec <- get_G_jump_times_from_Gfits(Gfits)
     }
     if (length(time_vec) == 0L) stop("build_h_tau_matrix_cal(): time_vec is empty.")
     time_vec <- sort(unique(as.numeric(time_vec)))
-    
+
     # dat_cal_tau ids define the prediction-model row space for q_lo/q_hi
     ids_tau <- dat_cal_tau[[id.name]]
     if (anyDuplicated(ids_tau)) {
@@ -3810,21 +3813,12 @@ build_h_tau_matrix_cal <- function(
              paste(utils::head(miss_ids, 10), collapse = ", "))
     }
     X_row <- summ$X[idx_summ]
-    
-    ## ---------------- prediction quantiles q_theta, q_{1-theta} (from dat_cal_tau) ----------------
-    q_lo_tau <- surv_quantile_vec_from_pred(pred_time, pred_surv_cal, beta = theta)
-    q_hi_tau <- surv_quantile_vec_from_pred(pred_time, pred_surv_cal, beta = 1 - theta)
-    
-    # expand to output rows by id; non-tau ids remain NA (expected when row_data="all")
+
+    # id alignment from output rows to the tau (prediction-model) row space
+    # (theta-independent; the quantile VALUES are filled in after the cache)
     idx_tau_in_row <- match(as.character(ids_row), as.character(ids_tau))
-    q_lo <- rep(NA_real_, n)
-    q_hi <- rep(NA_real_, n)
     has_tau <- !is.na(idx_tau_in_row)
-    if (any(has_tau)) {
-        q_lo[has_tau] <- q_lo_tau[idx_tau_in_row[has_tau]]
-        q_hi[has_tau] <- q_hi_tau[idx_tau_in_row[has_tau]]
-    }
-    
+
     ## ---------------- \tilde G(tau | L_nu) ----------------
     if (is.null(Gtau_vec)) {
         G_tau_obj <- predict_G_from_Gk_matrix(
@@ -3896,7 +3890,61 @@ build_h_tau_matrix_cal <- function(
             Sk_pred_cache[k] <- list(NULL)
         }
     }
-    
+
+    ## ---------------- denominator S_k(u- | L_k) per interval (theta-independent) ----------------
+    S_u_left_list <- vector("list", K)
+    for (k in seq_len(K)) {
+        cols_k <- which(k_of_u == k)
+        if (length(cols_k) == 0L) next
+        cache_k <- Sk_pred_cache[[k]]
+        idxk    <- Sk_row_cache[[k]]$idx
+        if (is.null(cache_k) || length(idxk) == 0L) next
+        S_u_left_list[[k]] <- pmax(
+            predict_Sk_cache_common_times(cache_k, time_vec[cols_k], left_limit = TRUE, tol = tol),
+            trim.S
+        )
+    }
+
+    list(
+        nu = nu, ids_tau = ids_tau, ids_row = ids_row, n = n, m = m,
+        time_vec = time_vec, X_row = X_row,
+        idx_tau_in_row = idx_tau_in_row, has_tau = has_tau,
+        Gtau_vec = Gtau_vec, k_of_u = k_of_u,
+        Sk_row_cache = Sk_row_cache, Sk_pred_cache = Sk_pred_cache,
+        S_u_left_list = S_u_left_list
+    )
+    }) else precomp   # end theta-independent precompute
+
+    if (isTRUE(precomp_only)) return(pc)
+
+    ## ---------------- unpack the theta-independent cache ----------------
+    nu             <- pc$nu
+    ids_tau        <- pc$ids_tau
+    ids_row        <- pc$ids_row
+    n              <- pc$n
+    m              <- pc$m
+    time_vec       <- pc$time_vec
+    X_row          <- pc$X_row
+    idx_tau_in_row <- pc$idx_tau_in_row
+    has_tau        <- pc$has_tau
+    Gtau_vec       <- pc$Gtau_vec
+    k_of_u         <- pc$k_of_u
+    Sk_row_cache   <- pc$Sk_row_cache
+    Sk_pred_cache  <- pc$Sk_pred_cache
+    S_u_left_list  <- pc$S_u_left_list
+
+    ## ---------------- prediction quantiles q_theta, q_{1-theta} (theta-DEPENDENT) ----------------
+    q_lo_tau <- surv_quantile_vec_from_pred(pred_time, pred_surv_cal, beta = theta)
+    q_hi_tau <- surv_quantile_vec_from_pred(pred_time, pred_surv_cal, beta = 1 - theta)
+
+    # expand to output rows by id; non-tau ids remain NA (expected when row_data="all")
+    q_lo <- rep(NA_real_, n)
+    q_hi <- rep(NA_real_, n)
+    if (any(has_tau)) {
+        q_lo[has_tau] <- q_lo_tau[idx_tau_in_row[has_tau]]
+        q_hi[has_tau] <- q_hi_tau[idx_tau_in_row[has_tau]]
+    }
+
     ## ---------------- cache xi_k predictions for k < nu ----------------
     xi_cache <- vector("list", K)
     if (nu > 1L) {
@@ -3936,10 +3984,9 @@ build_h_tau_matrix_cal <- function(
         
         # absolute times in this interval-block
         u_k <- time_vec[cols_k]
-        
-        # Denominator S_k(u- | L_k), matrix n_k x c
-        S_u_left <- predict_Sk_cache_common_times(cache_k, u_k, left_limit = TRUE, tol = tol)
-        S_u_left <- pmax(S_u_left, trim.S)
+
+        # Denominator S_k(u- | L_k), matrix n_k x c (theta-independent; precomputed)
+        S_u_left <- S_u_left_list[[k]]
         
         if (k < nu) {
             ## ---------- u < tau branch ----------

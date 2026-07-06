@@ -1267,7 +1267,39 @@ dynamicCP_AIPCW_split <- function(dat, dat_test = NULL, start.name, stop.name, e
     Gtau_tr_tau  <- get_Gtau_at_tau(dat_tr, dat_tr_tau[[id.name]])
     Gtau_cal     <- get_Gtau_at_tau(dat_cal, dat_cal_tau[[id.name]])
     Gtau_cal_all <- get_Gtau_at_tau(dat_cal, ids_cal_all)
-    
+
+    # Theta-independent precompute for the AIPCW augmentation h_tau matrix,
+    # built once here and reused for every theta in compute_aug_sum_at_theta()
+    # (the S_k predictor caches, S_k(u-) denominators, G(tau) and interval map
+    # do not depend on theta). Results are bit-identical to recomputing per theta,
+    # EXCEPT when an S_k model is 'rsf': predict.rfsrc() consumes the R RNG stream
+    # on every call, so building the S_k predictor cache once instead of once per
+    # theta would change the number of RNG draws and shift all downstream
+    # randomized fits (bitwise-different, statistically equivalent). For rsf S
+    # models we therefore skip the precompute and keep the original per-theta path.
+    .sfit_uses_rsf <- function(s) {
+        if (is.null(s)) return(FALSE)
+        if (identical(s$model, "rsf")) return(TRUE)
+        if (identical(s$model, "hybrid_interval_ipcw")) {
+            return(.sfit_uses_rsf(s$short_fit) || .sfit_uses_rsf(s$tail_fit))
+        }
+        FALSE
+    }
+    h_precomp <- NULL
+    if (m_u > 0L && !any(vapply(Sfits, .sfit_uses_rsf, logical(1)))) {
+        h_precomp <- build_h_tau_matrix_cal(
+            dat_cal = dat_cal, dat_cal_tau = dat_cal_tau,
+            pred_time = pred_time, pred_surv_cal = pred_surv_cal,
+            visit_times = visit_times, tau = tau, alpha = alpha,
+            start.name = start.name, stop.name = stop.name,
+            event.name = event.name, event.C.name = event.C.name, id.name = id.name,
+            Gfits = Gfits, Sfits = Sfits,
+            time_vec = time_vec_AIPCW, Gtau_vec = Gtau_cal_all,
+            row_data = "all", mask_after_X = TRUE, after_X_value = NA_real_,
+            precomp_only = TRUE
+        )
+    }
+
     X_cal <- dat_cal_tau[[stop.name]]
     Delta_cal <- dat_cal_tau[[event.name]]
     
@@ -1408,7 +1440,9 @@ dynamicCP_AIPCW_split <- function(dat, dat_test = NULL, start.name, stop.name, e
             }
         }
         
-        # h_tau on calibration (all subjects)
+        # h_tau on calibration (all subjects).
+        # h_precomp holds the theta-independent objects (S_k caches, denominators,
+        # G(tau), interval map); it is built once below and reused for every theta.
         h_obj <- build_h_tau_matrix_cal(
             dat_cal = dat_cal,
             dat_cal_tau = dat_cal_tau,
@@ -1430,7 +1464,8 @@ dynamicCP_AIPCW_split <- function(dat, dat_test = NULL, start.name, stop.name, e
             Gtau_vec = Gtau_cal_all,
             row_data = "all",
             mask_after_X = TRUE,
-            after_X_value = NA_real_
+            after_X_value = NA_real_,
+            precomp = h_precomp
         )
         
         idx_h_all <- match(ids_cal_all, as.character(h_obj$ids))
