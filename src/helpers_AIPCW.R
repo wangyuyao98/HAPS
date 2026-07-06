@@ -1268,55 +1268,135 @@ predict_G_from_Gk_matrix <- function(
     }
     
     # ------------------------------------------------------------------
+    # Hoisted per-interval curve evaluators: for the km/cox/rsf backends the
+    # subject-level censoring-survival curve does not depend on the evaluation
+    # time, so run the model prediction ONCE per interval and evaluate the
+    # resulting step functions at each requested time. Values are identical to
+    # per-column predict_Gk() calls (same per-row computations); backends not
+    # handled here fall back to predict_Gk() per column as before.
+    # eval(rows, t_abs): survival at scalar time t_abs for datk[rows, ].
+    make_Gk_evaluator <- function(gk, datk) {
+        if (is.null(gk) || is.null(datk) || nrow(datk) == 0) return(NULL)
+        t_k <- gk$t_k
+        t_k1 <- gk$t_k1
+        if (gk$model == "km") {
+            function(rows, t_abs) {
+                t_rel <- pmax(0, pmin(t_abs, t_k1) - t_k)
+                gk$S_step(rep(t_rel, length(rows)))
+            }
+        } else if (gk$model == "cox") {
+            if (!is.null(gk$cov_use)) {
+                miss <- setdiff(gk$cov_use, names(datk))
+                if (length(miss) > 0) {
+                    stop("predict_Gk(): newdata_tk is missing covariates: ", paste(miss, collapse = ", "))
+                }
+            }
+            X <- stats::model.matrix(gk$fit, datk)
+            if (nrow(X) != nrow(datk)) {
+                stop("predict_G_from_Gk_matrix(): model.matrix dropped ",
+                     nrow(datk) - nrow(X), " of ", nrow(datk),
+                     " cached rows at k with t_k=", t_k,
+                     " (missing covariate values are not supported).")
+            }
+            r <- exp(drop(X %*% stats::coef(gk$fit)))
+            function(rows, t_abs) {
+                t_rel <- pmax(0, pmin(t_abs, t_k1) - t_k)
+                gk$S0_step(rep(t_rel, length(rows)))^r[rows]
+            }
+        } else if (gk$model == "rsf") {
+            if (!requireNamespace("randomForestSRC", quietly = TRUE)) {
+                stop("predict_Gk(): package 'randomForestSRC' required for model='rsf'.")
+            }
+            if (!is.null(gk$cov_use)) {
+                miss <- setdiff(gk$cov_use, names(datk))
+                if (length(miss) > 0) {
+                    stop("predict_Gk(): newdata_tk is missing covariates: ", paste(miss, collapse = ", "))
+                }
+            }
+            pred <- predict(gk$fit, newdata = datk)
+            grid <- pred$time.interest
+            S <- pred$survival
+            if (NROW(S) != nrow(datk)) {
+                stop("predict_G_from_Gk_matrix(): rsf prediction returned ", NROW(S),
+                     " rows for ", nrow(datk),
+                     " cached rows (missing covariate values are not supported).")
+            }
+            function(rows, t_abs) {
+                t_rel <- pmax(0, pmin(t_abs, t_k1) - t_k)
+                eval_step_surv(S[rows, , drop = FALSE], grid, t_rel = rep(t_rel, length(rows)))
+            }
+        } else {
+            NULL
+        }
+    }
+
+    # ------------------------------------------------------------------
     # Prefix product entering interval k:
     # prefix[i] = product_{j<k} G_j(t_{j+1}-t_j | L_j) for subject i
     # We update this recursively as k increases.
     # ------------------------------------------------------------------
     prefix <- rep(1, n)  # entering interval 1
-    
+
     # Process intervals in order
     for (k in seq_len(K)) {
         cols_k <- which(k_of_t == k)
         gk <- Gfits[[k]]
         idxk <- cache[[k]]$idx
         datk <- cache[[k]]$dat
-        
+
+        # One model prediction per interval (NULL for backends without a
+        # hoisted evaluator; those use the per-column predict_Gk fallback)
+        eval_k <- if (length(idxk) > 0 && !is.null(gk) && (length(cols_k) > 0 || k < K)) {
+            make_Gk_evaluator(gk, datk)
+        } else {
+            NULL
+        }
+
         # Fill columns in interval k using:
         # G(t) = prefix * G_k(t - t_k)
         if (length(cols_k) > 0) {
             if (length(idxk) > 0 && !is.null(gk)) {
                 for (cc in cols_k) {
                     tt <- time_sorted[cc]
-                    
+
                     # valid among subjects cached for this interval
                     keep_local <- (tt <= X[idxk])   # still require t <= X_i
                     if (!any(keep_local)) next
-                    
+
                     subj_idx <- idxk[keep_local]
-                    dat_use  <- datk[keep_local, , drop = FALSE]
-                    
-                    Gj <- predict_Gk(gk, dat_use, t_abs = rep(tt, length(subj_idx)))
+
+                    if (!is.null(eval_k)) {
+                        Gj <- eval_k(which(keep_local), tt)
+                    } else {
+                        dat_use  <- datk[keep_local, , drop = FALSE]
+                        Gj <- predict_Gk(gk, dat_use, t_abs = rep(tt, length(subj_idx)))
+                    }
                     if (!is.null(trim.G)) Gj <- pmax(Gj, trim.G)
-                    
+
                     G_sorted[subj_idx, cc] <- prefix[subj_idx] * Gj
                 }
             }
             # else: remain NA (no available model / no subjects at risk)
         }
-        
+
         # Update prefix for entering interval k+1 using full interval factor of G_k
         if (k < K) {
             t_next <- visit_times[k + 1]
-            
+
             # Subjects who enter the next interval satisfy X > t_{k+1}
             if (length(idxk) > 0) {
                 enter_next_local <- (X[idxk] > t_next)
-                
+
                 if (any(enter_next_local)) {
                     subj_next <- idxk[enter_next_local]
-                    
+
                     if (is.null(gk)) {
                         prefix[subj_next] <- NA_real_
+                    } else if (!is.null(eval_k)) {
+                        Gj_end <- eval_k(which(enter_next_local), t_next)
+                        if (!is.null(trim.G)) Gj_end <- pmax(Gj_end, trim.G)
+
+                        prefix[subj_next] <- prefix[subj_next] * Gj_end
                     } else {
                         Gj_end <- predict_Gk(
                             gk,
@@ -1324,7 +1404,7 @@ predict_G_from_Gk_matrix <- function(
                             t_abs = rep(t_next, length(subj_next))
                         )
                         if (!is.null(trim.G)) Gj_end <- pmax(Gj_end, trim.G)
-                        
+
                         prefix[subj_next] <- prefix[subj_next] * Gj_end
                     }
                 }
