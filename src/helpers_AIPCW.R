@@ -1157,8 +1157,12 @@ predict_G_from_Gk_matrix <- function(
         time_vec = NULL,              # if NULL, use all jump times from fitted Gk's
         start.name, stop.name, event.name, event.C.name, id.name,
         Gfits,
-        trim.G = 1e-7,                
-        return_subject_info = TRUE    # return ids and X along with matrix
+        trim.G = 1e-7,
+        return_subject_info = TRUE,   # return ids and X along with matrix
+        fast_rsf_predict = FALSE      # opt-in: one rsf prediction per interval instead of
+                                      # per evaluation time (identical values, ~big speedup,
+                                      # but changes the R RNG draw count => downstream
+                                      # randomized fits differ bitwise; default off)
 ) {
     if (is.null(Gfits) || length(Gfits) == 0) {
         stop("Gfits must be a non-empty list.")
@@ -1303,15 +1307,42 @@ predict_G_from_Gk_matrix <- function(
                 t_rel <- pmax(0, pmin(t_abs, t_k1) - t_k)
                 gk$S0_step(rep(t_rel, length(rows)))^r[rows]
             }
+        } else if (gk$model == "rsf" && isTRUE(fast_rsf_predict)) {
+            # OPT-IN fast path (see fast_rsf_predict below / HAPS_FAST_RSF_PREDICT):
+            # one forest prediction per interval instead of one per evaluation time.
+            # The predicted values are identical to the per-column path, but
+            # predict.rfsrc() consumes the R RNG stream on every call, so changing
+            # the NUMBER of predict calls shifts the seeds of downstream randomized
+            # fits => bitwise-different (statistically equivalent) results. Hence
+            # DEFAULT OFF to keep outputs bit-identical to the original code.
+            if (!requireNamespace("randomForestSRC", quietly = TRUE)) {
+                stop("predict_Gk(): package 'randomForestSRC' required for model='rsf'.")
+            }
+            if (!is.null(gk$cov_use)) {
+                miss <- setdiff(gk$cov_use, names(datk))
+                if (length(miss) > 0) {
+                    stop("predict_Gk(): newdata_tk is missing covariates: ", paste(miss, collapse = ", "))
+                }
+            }
+            pred <- predict(gk$fit, newdata = datk)
+            grid <- pred$time.interest
+            S <- pred$survival
+            if (NROW(S) != nrow(datk)) {
+                stop("predict_G_from_Gk_matrix(): rsf prediction returned ", NROW(S),
+                     " rows for ", nrow(datk),
+                     " cached rows (missing covariate values are not supported).")
+            }
+            function(rows, t_abs) {
+                t_rel <- pmax(0, pmin(t_abs, t_k1) - t_k)
+                eval_step_surv(S[rows, , drop = FALSE], grid, t_rel = rep(t_rel, length(rows)))
+            }
         } else {
-            # NOTE: no hoisted evaluator for 'rsf' (and other backends), on purpose.
-            # predict.rfsrc() consumes the R RNG stream on every call, so replacing
-            # the per-column predict calls with a single per-interval call changes
-            # the number of RNG draws and thereby shifts the seeds of all DOWNSTREAM
-            # randomized fits in the same replication (bitwise-different results,
-            # statistically equivalent). To keep outputs bit-identical to the
-            # original implementation, rsf uses the per-column predict_Gk() fallback.
-            # The cox/km evaluators above consume no RNG (verified), so they are safe.
+            # No hoisted evaluator for 'rsf' (unless fast_rsf_predict=TRUE, above)
+            # or other backends: rsf's predict.rfsrc() consumes the R RNG stream on
+            # every call, so hoisting would change the draw count and shift all
+            # downstream randomized fits (bitwise-different results, statistically
+            # equivalent). The per-column predict_Gk() fallback keeps outputs
+            # bit-identical. The cox/km evaluators above consume no RNG (verified).
             NULL
         }
     }
@@ -3733,7 +3764,8 @@ build_h_tau_matrix_cal <- function(
         after_X_value = NA_real_,
         tol = 1e-12,
         precomp = NULL,
-        precomp_only = FALSE
+        precomp_only = FALSE,
+        fast_rsf_predict = FALSE
 ) {
     # precomp: an optional list of theta-INDEPENDENT objects returned by a prior
     #   call with precomp_only = TRUE. Passing it back avoids recomputing the
@@ -3828,7 +3860,8 @@ build_h_tau_matrix_cal <- function(
             event.C.name = event.C.name, id.name = id.name,
             Gfits = Gfits,
             trim.G = NULL,
-            return_subject_info = TRUE
+            return_subject_info = TRUE,
+            fast_rsf_predict = fast_rsf_predict
         )
         idx_g_tau <- match(as.character(ids_tau), as.character(G_tau_obj$ids))
         if (anyNA(idx_g_tau)) {

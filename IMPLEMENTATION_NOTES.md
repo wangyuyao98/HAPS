@@ -97,7 +97,24 @@ they are currently unreached.
   `Unif(0, 15)`. It is unreachable in shipped runs because `dgm_name` is fixed to
   `"linear_weibull"` in that script; only relevant if that block is ever activated.
 
-## 4. DDH prediction-model caveats
+## 4. Optional speed flag: `fast_rsf_predict` (default OFF)
+
+`predict.rfsrc()` consumes the R RNG stream on every call, so the number of RSF
+prediction calls affects the seeds of all downstream randomized fits in the same
+replication. The AIPCW pipeline can hoist RSF predictions (one call per interval /
+per τ instead of one per evaluation time / per θ); the predicted values are
+identical, and in the DGM2 DDH smoke run this cut the driver from ~100s to ~41s
+(~2.4x), but results become bitwise-different (statistically equivalent) from the
+published `.rds` files.
+
+- Default `FALSE` — bit-identical to the original implementation (use for exact
+  reproduction of the paper's results).
+- Enable per call via `dynamicCP_AIPCW_split(..., fast_rsf_predict = TRUE)` or
+  globally via the environment variable `HAPS_FAST_RSF_PREDICT=TRUE` (e.g.
+  `HAPS_FAST_RSF_PREDICT=TRUE Rscript main_simu_dynamic_DDH_tuning.R ...`) for new
+  experiments where exact bitwise reproduction is not required.
+
+## 5. DDH prediction-model caveats
 
 - CPU threads: `src/ddh_backend.py` now pins `torch.set_num_threads` (default 1,
   override via `args["torch_num_threads"]`) for cross-run/cross-machine

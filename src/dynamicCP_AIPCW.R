@@ -193,7 +193,16 @@ dynamicCP_AIPCW_split <- function(dat, dat_test = NULL, start.name, stop.name, e
                              AIPCW_theta_selector = c("first_crossing", "rightmost_nonnegative"),
                              AIPCW_theta_tol = 0,
                             return_Gfits = FALSE,
-                            return_on_aipcw_fail = FALSE){
+                            return_on_aipcw_fail = FALSE,
+                            # Opt-in speedup for rsf nuisance predictions: hoists
+                            # predict.rfsrc() calls (one per interval / one per tau
+                            # instead of per evaluation time / per theta). Predicted
+                            # values are identical, but the number of R RNG draws
+                            # changes, so downstream randomized fits differ BITWISE
+                            # (statistically equivalent). Default FALSE keeps results
+                            # bit-identical to the original implementation. Can also
+                            # be enabled globally via env var HAPS_FAST_RSF_PREDICT=TRUE.
+                            fast_rsf_predict = (toupper(Sys.getenv("HAPS_FAST_RSF_PREDICT", "")) %in% c("TRUE", "1", "YES"))){
     
     if (is.null(visit_times) || length(visit_times) == 0) stop("visit_times must be provided.")
     k_tau <- match(tau, visit_times)
@@ -1050,7 +1059,8 @@ dynamicCP_AIPCW_split <- function(dat, dat_test = NULL, start.name, stop.name, e
             event.C.name = event.C.name, id.name = id.name,
             Gfits = Gfits,
             trim.G = NULL,
-            return_subject_info = TRUE
+            return_subject_info = TRUE,
+            fast_rsf_predict = fast_rsf_predict
         )
         
         idx_G_all <- match(ids_cal_all, as.character(G_cal_obj$ids))
@@ -1164,7 +1174,8 @@ dynamicCP_AIPCW_split <- function(dat, dat_test = NULL, start.name, stop.name, e
             event.C.name = event.C.name, id.name = id.name,
             Gfits = Gfits,
             trim.G = NULL,
-            return_subject_info = TRUE
+            return_subject_info = TRUE,
+            fast_rsf_predict = fast_rsf_predict
         )
         idx_gt <- match(as.character(ids_target), as.character(G_tau_obj$ids))
         if (anyNA(idx_gt)) {
@@ -1192,7 +1203,8 @@ dynamicCP_AIPCW_split <- function(dat, dat_test = NULL, start.name, stop.name, e
             event.C.name = event.C.name, id.name = id.name,
             Gfits = Gfits,
             trim.G = NULL,
-            return_subject_info = TRUE
+            return_subject_info = TRUE,
+            fast_rsf_predict = fast_rsf_predict
         )
         idx_gt <- match(as.character(ids_target), as.character(G_obj$ids))
         if (anyNA(idx_gt)) {
@@ -1276,7 +1288,8 @@ dynamicCP_AIPCW_split <- function(dat, dat_test = NULL, start.name, stop.name, e
     # on every call, so building the S_k predictor cache once instead of once per
     # theta would change the number of RNG draws and shift all downstream
     # randomized fits (bitwise-different, statistically equivalent). For rsf S
-    # models we therefore skip the precompute and keep the original per-theta path.
+    # models we therefore skip the precompute and keep the original per-theta path,
+    # unless the caller opts in via fast_rsf_predict (bitwise-different results).
     .sfit_uses_rsf <- function(s) {
         if (is.null(s)) return(FALSE)
         if (identical(s$model, "rsf")) return(TRUE)
@@ -1286,7 +1299,8 @@ dynamicCP_AIPCW_split <- function(dat, dat_test = NULL, start.name, stop.name, e
         FALSE
     }
     h_precomp <- NULL
-    if (m_u > 0L && !any(vapply(Sfits, .sfit_uses_rsf, logical(1)))) {
+    if (m_u > 0L &&
+        (isTRUE(fast_rsf_predict) || !any(vapply(Sfits, .sfit_uses_rsf, logical(1))))) {
         h_precomp <- build_h_tau_matrix_cal(
             dat_cal = dat_cal, dat_cal_tau = dat_cal_tau,
             pred_time = pred_time, pred_surv_cal = pred_surv_cal,
@@ -1296,7 +1310,8 @@ dynamicCP_AIPCW_split <- function(dat, dat_test = NULL, start.name, stop.name, e
             Gfits = Gfits, Sfits = Sfits,
             time_vec = time_vec_AIPCW, Gtau_vec = Gtau_cal_all,
             row_data = "all", mask_after_X = TRUE, after_X_value = NA_real_,
-            precomp_only = TRUE
+            precomp_only = TRUE,
+            fast_rsf_predict = fast_rsf_predict
         )
     }
 
@@ -1465,7 +1480,8 @@ dynamicCP_AIPCW_split <- function(dat, dat_test = NULL, start.name, stop.name, e
             row_data = "all",
             mask_after_X = TRUE,
             after_X_value = NA_real_,
-            precomp = h_precomp
+            precomp = h_precomp,
+            fast_rsf_predict = fast_rsf_predict
         )
         
         idx_h_all <- match(ids_cal_all, as.character(h_obj$ids))
