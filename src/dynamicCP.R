@@ -4,7 +4,7 @@
 
 #' Construct the prediction intervals with split conformal prediction algorithm for survivors at time tau
 #' @param dat a data frame in long format with time-varying covariates
-#' @param dat a data frame in long format with time-varying covariates representing the test data; if is NULL, the calibration data is used 
+#' @param dat_test a data frame in long format with time-varying covariates representing the test data; if is NULL, the calibration data is used
 #' @param start.name the variable name for the start of the counting process interval
 #' @param stop.name the variable name for the stop of the counting process interval
 #' @param event.name the variable name for the event indicator
@@ -42,7 +42,7 @@ dynamicCP_split <- function(dat, dat_test = NULL, start.name, stop.name, event.n
     dat_tr = dat[id %in% id_tr, ] 
     dat_cal = dat[!(id %in% id_tr), ]
     
-    if(is.null(dat_test) | nrow(dat_test) == 0){
+    if(is.null(dat_test) || nrow(dat_test) == 0){
         dat_test <- dat_cal
     }
     
@@ -352,9 +352,16 @@ dynamicCP_split <- function(dat, dat_test = NULL, start.name, stop.name, event.n
             lp_tr <- as.numeric(stats::predict(fit_xgb, newdata = X_tr$X, outputmargin = TRUE))
             lp_tr[!is.finite(lp_tr)] <- 0
             lp_tr <- pmax(pmin(lp_tr, 30), -30)
-            
+
+            # Center the offset before the anchor fit: basehaz(fit, centered = FALSE)
+            # on an offset-only coxph returns the cumulative hazard at the MEAN offset,
+            # so an uncentered lp would scale G by exp(mean(lp)) once exp(lp) is
+            # multiplied back in at prediction time. Centering here (and subtracting
+            # lp_center again at prediction) anchors the baseline at offset 0,
+            # mirroring the xgb_cox nuisance paths in helpers_AIPCW.R.
+            lp_center <- mean(lp_tr)
             dat_anchor <- dat_tr
-            dat_anchor$lp_off <- lp_tr
+            dat_anchor$lp_off <- lp_tr - lp_center
             form_anchor <- as.formula(
                 paste0("Surv(", start.name, ",", stop.name, ",", event.C.name, ") ~ offset(lp_off)")
             )
@@ -369,7 +376,8 @@ dynamicCP_split <- function(dat, dat_test = NULL, start.name, stop.name, event.n
                 cov_C_use = cov_C_use,
                 design_info = X_tr$design_info,
                 start.name = start.name,
-                stop.name = stop.name
+                stop.name = stop.name,
+                lp_center = lp_center
             )
             dat_test$surv.C <- predict_surv_xgb_cox_interval(
                 fit_xgb = fit_xgb,
@@ -379,7 +387,8 @@ dynamicCP_split <- function(dat, dat_test = NULL, start.name, stop.name, event.n
                 cov_C_use = cov_C_use,
                 design_info = X_tr$design_info,
                 start.name = start.name,
-                stop.name = stop.name
+                stop.name = stop.name,
+                lp_center = lp_center
             )
             
             dat_cal$surv.C.subj <- ave(dat_cal[, "surv.C"], dat_cal[, id.name],
@@ -535,8 +544,12 @@ dynamicCP_split <- function(dat, dat_test = NULL, start.name, stop.name, event.n
     
     hat_W_IPCW = hat_W_IPCW[-1] # remove the place holder.
     # Select the best theta
+    # Bounded scan: if the estimating function never goes negative on the searched
+    # grid (e.g., all uncensored survivors fall inside even the narrowest candidate
+    # interval), stop at the last evaluated index instead of reading past the end
+    # of hat_W_IPCW (which errors with "missing value where TRUE/FALSE needed").
     j <- 1
-    while (hat_W_IPCW[j] >= 0) {
+    while (j <= length(hat_W_IPCW) && hat_W_IPCW[j] >= 0) {
         j <- j + 1
     }
     theta_index_lower_IPCW <- max(j - 1, 1) # Ensure at least index 1
@@ -663,15 +676,19 @@ xgb_build_design_matrix <- function(dat, cov_use, design_info = NULL) {
 }
 
 # Predict interval survival P(C > stop | C > start, Z) using xgb Cox + anchored baseline hazard
+# lp_center must match the centering used when fitting the anchored baseline hazard
+# (see the xgb_global branch above), so that the baseline corresponds to offset 0.
 predict_surv_xgb_cox_interval <- function(fit_xgb, bh_time, bh_cumhaz, newdata,
-                                          cov_C_use, design_info, start.name, stop.name) {
+                                          cov_C_use, design_info, start.name, stop.name,
+                                          lp_center = 0) {
     if (nrow(newdata) == 0) return(numeric(0))
     if (length(bh_time) == 0 || length(bh_cumhaz) == 0) return(rep(1, nrow(newdata)))
-    
+
     X_new <- xgb_build_design_matrix(newdata, cov_C_use, design_info = design_info)
     lp <- as.numeric(stats::predict(fit_xgb, newdata = X_new$X, outputmargin = TRUE))
     lp[!is.finite(lp)] <- 0
     lp <- pmax(pmin(lp, 30), -30)
+    lp <- lp - lp_center
     
     t_start <- as.numeric(newdata[[start.name]])
     t_stop <- as.numeric(newdata[[stop.name]])

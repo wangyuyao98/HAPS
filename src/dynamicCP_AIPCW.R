@@ -38,7 +38,7 @@
 
 #' Construct the prediction intervals with split conformal prediction algorithm for survivors at time tau
 #' @param dat a data frame in long format with time-varying covariates
-#' @param dat a data frame in long format with time-varying covariates representing the test data; if is NULL, the calibration data is used 
+#' @param dat_test a data frame in long format with time-varying covariates representing the test data; if is NULL, the calibration data is used
 #' @param start.name the variable name for the start of the counting process interval
 #' @param stop.name the variable name for the stop of the counting process interval
 #' @param event.name the variable name for the event indicator
@@ -263,7 +263,7 @@ dynamicCP_AIPCW_split <- function(dat, dat_test = NULL, start.name, stop.name, e
     dat_cal = dat[!(id %in% id_tr), ]
     
     
-    if(is.null(dat_test) | nrow(dat_test) == 0){
+    if(is.null(dat_test) || nrow(dat_test) == 0){
         dat_test <- dat_cal
     }
     
