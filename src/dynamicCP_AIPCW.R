@@ -308,17 +308,19 @@ dynamicCP_AIPCW_split <- function(dat, dat_test = NULL, start.name, stop.name, e
         fit.pred <- coxph(formula.pred, data = dat_tr_tau)
         
         # prediction on the calibration data and test data
-        sf_tr <- survfit(fit.pred, newdata = dat_tr_tau)
+        # (se.fit/conf.type disabled: only $time/$surv are used; $surv is identical
+        # and survfit() is several times faster without the SE/CI computation)
+        sf_tr <- survfit(fit.pred, newdata = dat_tr_tau, se.fit = FALSE, conf.type = "none")
         pred_surv_tr <- t(sf_tr$surv)
         if (!is.matrix(pred_surv_tr)) {
             pred_surv_tr <- matrix(pred_surv_tr, nrow = nrow(dat_tr_tau), byrow = TRUE)
         }
-        
-        sf_cal <- survfit(fit.pred, newdata = dat_cal_tau)
+
+        sf_cal <- survfit(fit.pred, newdata = dat_cal_tau, se.fit = FALSE, conf.type = "none")
         pred_time <- sf_cal$time
         pred_surv_cal <- t(sf_cal$surv)  # row - individual, col - times points
-        
-        sf_test <- survfit(fit.pred, newdata = dat_test_tau)
+
+        sf_test <- survfit(fit.pred, newdata = dat_test_tau, se.fit = FALSE, conf.type = "none")
         pred_surv_test <- t(sf_test$surv)  # row - individual, col - times points
         
     } else if (model.pred == "rsf") {

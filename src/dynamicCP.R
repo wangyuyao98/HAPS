@@ -64,11 +64,14 @@ dynamicCP_split <- function(dat, dat_test = NULL, start.name, stop.name, event.n
         dat_cal_tau <- prepare_data_tau(dat_cal, start.name, stop.name, event.name, id.name, tau)
         dat_test_tau <- prepare_data_tau(dat_test, start.name, stop.name, event.name, id.name, tau)
         
-        sf_cal <- survfit(fit.pred, newdata = dat_cal_tau)
+        # se.fit/conf.type disabled: only $time/$surv are used below, and skipping
+        # the standard-error/CI computation leaves $surv identical while making
+        # survfit() several times faster on large newdata.
+        sf_cal <- survfit(fit.pred, newdata = dat_cal_tau, se.fit = FALSE, conf.type = "none")
         pred_time <- sf_cal$time
         pred_surv_cal <- t(sf_cal$surv)  # row - individual, col - times points
-        
-        sf_test <- survfit(fit.pred, newdata = dat_test_tau)
+
+        sf_test <- survfit(fit.pred, newdata = dat_test_tau, se.fit = FALSE, conf.type = "none")
         pred_surv_test <- t(sf_test$surv)  # row - individual, col - times points
         
     } else if (model.pred == "rsf") {
@@ -520,25 +523,27 @@ dynamicCP_split <- function(dat, dat_test = NULL, start.name, stop.name, event.n
     
     # search for the smallest theta
     n_cal_tau = nrow(dat_cal_tau)
+    n_grid <- length(theta_grid)
+    # Precompute all candidate interval endpoints in one vectorized pass
+    # (theta-independent work hoisted out of the search loop; the values are
+    # identical to the former per-(i, j) surv_quantile() calls).
+    Q_cal <- surv_quantile_grid(pred_time, pred_surv_cal, theta_grid)
+    X_cal <- dat_cal_tau[[stop.name]]
+    event_cal <- dat_cal_tau[[event.name]]
+    G_floor_cal <- pmax(dat_cal_tau[["surv.C.subj"]], trim.C)
+
     hat_W_IPCW = 1
     j = 1
-    while(hat_W_IPCW[j] >= 0 & j <= length(theta_grid)/2){
-        
+    while(hat_W_IPCW[j] >= 0 & j <= n_grid/2){
+
         # hat_W_IPCW
-        U_vec <- numeric(n_cal_tau)
-        for(i in 1: n_cal_tau){
-            if(dat_cal_tau[[event.name]][i] == 0){
-                U_vec[i] = 0
-            }else{
-                lo <- surv_quantile(i, j, pred_time, pred_surv_cal, theta_grid)
-                hi <- surv_quantile(i, length(theta_grid) + 1 - j, pred_time, pred_surv_cal, theta_grid)
-                inside <- as.numeric(dat_cal_tau[[stop.name]][i] >= lo && dat_cal_tau[[stop.name]][i] <= hi)
-                U_vec[i] <- (inside - (1 - alpha)) / pmax(dat_cal_tau[["surv.C.subj"]][i], trim.C)
-            }
-        }
-        
+        lo_j <- Q_cal[, j]
+        hi_j <- Q_cal[, n_grid + 1 - j]
+        inside_j <- as.numeric(X_cal >= lo_j & X_cal <= hi_j)
+        U_vec <- ifelse(event_cal == 0, 0, (inside_j - (1 - alpha)) / G_floor_cal)
+
         hat_W_IPCW <- c(hat_W_IPCW, mean(U_vec))
-        
+
         j <- j+1
     } # End while(hat_W_IPCW[j] >= 0 & j <= length(theta_grid))
     
@@ -556,37 +561,24 @@ dynamicCP_split <- function(dat, dat_test = NULL, start.name, stop.name, event.n
     theta_index_upper_IPCW <- length(theta_grid) + 1 - theta_index_lower_IPCW
     theta_hat_IPCW <- theta_grid[theta_index_lower_IPCW]
     
-    surv_quantile_beta <- function(pred_surv, beta) {
-        if (!is.matrix(pred_surv)) {
-            pred_surv <- matrix(pred_surv, nrow = 1)
-        }
-        vapply(seq_len(nrow(pred_surv)), function(i) {
-            if (beta > 1 - pred_surv[i, length(pred_time)]) {
-                max(pred_time)
-            } else {
-                pred_time[min(which(1 - pred_surv[i, ] >= beta))]
-            }
-        }, numeric(1))
-    }
-    
-    lower_model_cal <- surv_quantile_beta(pred_surv_cal, alpha / 2)
-    upper_model_cal <- surv_quantile_beta(pred_surv_cal, 1 - alpha / 2)
-    lower_model_test <- surv_quantile_beta(pred_surv_test, alpha / 2)
-    upper_model_test <- surv_quantile_beta(pred_surv_test, 1 - alpha / 2)
-    
-    
-    # Compute the IPCW lower bound
+    # Raw model quantile intervals at alpha/2 and 1 - alpha/2
+    Q_model_cal <- surv_quantile_grid(pred_time, pred_surv_cal, c(alpha / 2, 1 - alpha / 2))
+    lower_model_cal <- Q_model_cal[, 1]
+    upper_model_cal <- Q_model_cal[, 2]
+    Q_model_test <- surv_quantile_grid(pred_time, pred_surv_test, c(alpha / 2, 1 - alpha / 2))
+    lower_model_test <- Q_model_test[, 1]
+    upper_model_test <- Q_model_test[, 2]
+
+
+    # Compute the IPCW lower/upper bounds at the selected grid indices
+    # (calibration side reuses the precomputed Q_cal matrix)
     n_test_tau = nrow(dat_test_tau)
-    lower_IPCW_cal <- sapply(1:n_cal_tau, surv_quantile, theta_index_lower_IPCW, pred_time, 
-                             pred_surv_cal, theta_grid)
-    lower_IPCW_test <- sapply(1:n_test_tau, surv_quantile, theta_index_lower_IPCW, pred_time, 
-                              pred_surv_test, theta_grid)
-    
-    # Compute the IPCW upper bound
-    upper_IPCW_cal <- sapply(1:n_cal_tau, surv_quantile, theta_index_upper_IPCW, pred_time, 
-                             pred_surv_cal, theta_grid)
-    upper_IPCW_test <- sapply(1:n_test_tau, surv_quantile, theta_index_upper_IPCW, pred_time, 
-                              pred_surv_test, theta_grid)
+    lower_IPCW_cal <- Q_cal[, theta_index_lower_IPCW]
+    upper_IPCW_cal <- Q_cal[, theta_index_upper_IPCW]
+    Q_test_sel <- surv_quantile_grid(pred_time, pred_surv_test,
+                                     theta_grid[c(theta_index_lower_IPCW, theta_index_upper_IPCW)])
+    lower_IPCW_test <- Q_test_sel[, 1]
+    upper_IPCW_test <- Q_test_sel[, 2]
     
     
     # Estimate the empirical coverage in the calibration data and test data using IPCW
@@ -794,6 +786,40 @@ surv_quantile <- function(
         # Find the smallest time index where survival probability is at most 1 - beta_grid[j]
         return(pred_time[min(which(1 - pred_surv[i, ] >= beta_grid[j]))])
     }
+}
+
+
+#' Vectorized version of surv_quantile() over a grid of probability levels
+#'
+#' Returns the n x length(beta_grid) matrix Q with
+#'   Q[i, j] = surv_quantile(i, j, pred_time, pred_surv, beta_grid),
+#' i.e., exactly reproducing the per-(i, j) lookups:
+#'   if (beta > 1 - pred_surv[i, m]) max(pred_time)
+#'   else pred_time[min(which(1 - pred_surv[i, ] >= beta))]
+#' For the (always satisfied in this pipeline) case of a nonincreasing survival
+#' curve, the first index with cdf >= beta equals #(cdf < beta) + 1, computed in
+#' a single findInterval() call per subject; a non-monotone row falls back to
+#' the literal which() scan so the result is identical in all cases.
+surv_quantile_grid <- function(pred_time, pred_surv, beta_grid) {
+    if (!is.matrix(pred_surv)) {
+        pred_surv <- matrix(pred_surv, nrow = 1)
+    }
+    m <- length(pred_time)
+    tmax <- max(pred_time)
+    n <- nrow(pred_surv)
+    Q <- matrix(tmax, nrow = n, ncol = length(beta_grid))
+    for (i in seq_len(n)) {
+        cdf_i <- 1 - pred_surv[i, ]
+        feas <- beta_grid <= cdf_i[m]
+        if (!any(feas)) next
+        if (!is.unsorted(cdf_i)) {
+            idx <- findInterval(beta_grid[feas], cdf_i, left.open = TRUE) + 1L
+        } else {
+            idx <- vapply(beta_grid[feas], function(b) min(which(cdf_i >= b)), integer(1))
+        }
+        Q[i, feas] <- pred_time[idx]
+    }
+    Q
 }
 
 
