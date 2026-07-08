@@ -2658,7 +2658,27 @@ fit_Yk_condmean_at_tk <- function(
         stop("fit_Yk_condmean_at_tk(): no uncensored weighted observations to fit regression.")
     }
     dat_fit <- dat_k[fit_idx, , drop = FALSE]
-    
+
+    # The 3-class construction of 'xgb_multiclass' identifies E[Y_tilde | L] only
+    # because Y_tilde takes the three values {0, -(1-alpha), alpha}. When a
+    # nonunit g_tau multiplies the pseudo-outcome (Gtau_mode = "estimated" or
+    # "tilted"), Y_tilde is no longer 3-valued and a classification model is
+    # conceptually inapplicable: computing pmat %*% value_map would silently
+    # drop the g_tau factor and target a different estimand than the regression
+    # branches. Fail loudly instead. Inert when g_tau is identically 1
+    # (Gtau_mode = "one", the paper's setting).
+    if (model == "xgb_multiclass" && use_g_tau_col) {
+        g_fit <- g_tau_vec[fit_idx]
+        g_active <- g_fit[dat_fit$Y_class != "zero" & is.finite(g_fit)]
+        if (length(g_active) > 0 && any(abs(g_active - 1) > 1e-12)) {
+            stop("fit_Yk_condmean_at_tk(): model='xgb_multiclass' requires the ",
+                 "pseudo-outcome to take exactly the three values {0, -(1-alpha), alpha}, ",
+                 "but a nonunit '", g_tau.name, "' factor is present (Gtau_mode != 'one'), ",
+                 "so Y_tilde = g_tau * (...) is no longer 3-valued. ",
+                 "Use a regression Xi model instead (e.g. model = 'xgb_reg', 'lm', 'rsf', or 'hal_reg').")
+        }
+    }
+
     ## -------- Covariates for L_k --------
     if (!use_history) {
         cov_use <- c(covname.baseline, covname.timevarying)
