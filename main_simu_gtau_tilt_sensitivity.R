@@ -121,6 +121,9 @@ calibrate <- function(dat_long, dat_test, tau, gtau_mode, gtau_delta, seed_split
 # Turn one calibrated fit into per-delta_eval evaluation rows (weighted coverage
 # on {T>tau, C_tilde>tau} for each delta_eval). Bounds/covered_T are computed once;
 # only the weight vector changes with delta_eval.
+# NOTE: this study uses the WEIGHTED evaluator for every arm (the consistent,
+# lowest-variance choice; see gtau_eval_method in the shared dynamic driver and
+# validation/compare_gtau_evaluators.R for the empirical comparison).
 eval_rows <- function(fit, method, delta_cal, tau, r, L_full, TT_by_id) {
     if (is.null(fit) || isTRUE(fit$error)) {
         return(lapply(delta_grid, function(de) data.frame(

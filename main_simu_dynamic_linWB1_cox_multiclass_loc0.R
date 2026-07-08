@@ -77,6 +77,25 @@ model.Xi   <- "xgb_multiclass"  # "lm", "rsf", "xgb_reg", "xgb_multiclass", "hal
 Gtau_mode <- "one"      # "one", "estimated", or "tilted"
 Gtau_delta <- 0         # tilt parameter used when Gtau_mode == "tilted"
 
+# Evaluation method for the at-risk estimand {T>tau, C_tilde>tau} when Gtau_mode
+# is "estimated" or "tilted" ("one" is unaffected):
+#   "weighted" (default): oracle-weighted coverage on uncensored T>tau survivors
+#       with weights w_i = G_tilde(tau | path_i) (delta = 0 under "estimated") ->
+#       column coverage_test_gtau. Lowest-variance, deterministic given the test
+#       set (Rao-Blackwellization of subgroup sampling).
+#   "subgroup": physical at-risk subgroup construction.
+#       - estimated: LEGACY behavior — censored test data, subgroup X>tau;
+#         coverage_test_true is then the at-risk coverage (pre-existing outputs
+#         are reproduced exactly under this setting).
+#       - tilted: uncensored test data; only the membership indicator
+#         I(C_tilde>tau) ~ Bernoulli(w_i) is drawn (its exact law), with the RNG
+#         stream isolated so calibration is untouched; plain subgroup mean ->
+#         coverage_test_gtau, weighted counterpart -> coverage_test_gtau_wt.
+gtau_eval_method <- "weighted"   # "weighted" or "subgroup"
+if (!gtau_eval_method %in% c("weighted", "subgroup")) {
+    stop("gtau_eval_method must be 'weighted' or 'subgroup'.")
+}
+
 # AIPCW controls
 localization <- FALSE
 censoring_method_AIPCW <- "piecewise"   # "piecewise" currently supported for AIPCW path
@@ -129,23 +148,32 @@ format_tag_num <- function(x) {
 }
 Gtau_delta_tag <- format_tag_num(Gtau_delta)
 
-# Test-data censoring for coverage evaluation:
-#  - "one":       uncensored test; coverage on the survivor population {T > tau}.
-#  - "estimated": censored test (true DGM law); coverage on the X>tau subgroup
-#                 {T>tau, C>tau} via covered_T.
-#  - "tilted":    uncensored test; coverage on {T>tau, C_tilde>tau} with C_tilde
-#                 from the exp(delta t)-tilted TRUE censoring law, evaluated by the
-#                 oracle weighting identity (weights from gtau_eval_helpers.R). The
-#                 full covariate path is retained (return_L_full below) for the tilt.
+# Test-data handling for coverage evaluation (see gtau_eval_method above):
+#  - "one":                 uncensored test; coverage on the survivor population
+#                           {T > tau} via covered_T (coverage_test_true).
+#  - "estimated"+weighted:  uncensored test; at-risk coverage on {T>tau, C>tau} by
+#                           the oracle weighting identity, weights G_true(tau|path)
+#                           -> coverage_test_gtau. coverage_test_true then means
+#                           survivor-population coverage (as in "one").
+#  - "estimated"+subgroup:  LEGACY — censored test (true DGM law); at-risk coverage
+#                           on the X>tau subgroup via covered_T (coverage_test_true).
+#  - "tilted" (either):     uncensored test; weights from the exp(delta t)-tilted
+#                           TRUE censoring law; weighted -> coverage_test_gtau, or
+#                           Bernoulli(w) subgroup mean -> coverage_test_gtau (with
+#                           the weighted value in coverage_test_gtau_wt).
+# The full covariate path (return_L_full) is retained whenever weights are needed.
+needs_gtau_weights <- (Gtau_mode == "tilted") ||
+    (Gtau_mode == "estimated" && gtau_eval_method == "weighted")
 no_censoring_test <- switch(
     Gtau_mode,
     one = TRUE,
-    estimated = FALSE,
+    estimated = (gtau_eval_method == "weighted"),
     tilted = TRUE,
     stop("Unknown Gtau_mode: ", Gtau_mode)
 )
-if (Gtau_mode == "tilted" && dgm_name != "linear_weibull") {
-    stop("Gtau_mode='tilted' evaluation weights are only implemented for dgm_name='linear_weibull'.")
+if (needs_gtau_weights && dgm_name != "linear_weibull") {
+    stop("Gtau evaluation weights are only implemented for dgm_name='linear_weibull' ",
+         "(use gtau_eval_method='subgroup' with Gtau_mode='estimated' for other DGMs).")
 }
 
 TT.name <- "TT"
@@ -335,9 +363,9 @@ for (method in method.list) {
             par = dgm_parK,
             rho = rho,
             dgm_name = dgm_name,
-            return_L_full = (Gtau_mode == "tilted")   # full path needed for the tilt normalizer
+            return_L_full = needs_gtau_weights   # full path needed for the Gtau weights
         )
-        L_full_test_r <- if (Gtau_mode == "tilted") attr(dat_test_r, "L_full") else NULL
+        L_full_test_r <- if (needs_gtau_weights) attr(dat_test_r, "L_full") else NULL
         
         if (!is.null(TT.name) && !(TT.name %in% colnames(dat_test_r))) {
             stop("TT.name=", TT.name, " not found in dat_test_r.")
@@ -360,9 +388,12 @@ for (method in method.list) {
             q50_len_test = NA_real_,
             q75_len_test = NA_real_
         )
-        # Extra weighted-coverage column only under Gtau_mode="tilted" (keeps the
-        # "one"/"estimated" output schema unchanged / bit-identical).
-        if (Gtau_mode == "tilted") tab_r$coverage_test_gtau <- NA_real_
+        # Extra at-risk-coverage columns only when Gtau weights are in play (keeps
+        # the "one" and legacy estimated+subgroup output schemas unchanged).
+        if (needs_gtau_weights) tab_r$coverage_test_gtau <- NA_real_
+        if (Gtau_mode == "tilted" && gtau_eval_method == "subgroup") {
+            tab_r$coverage_test_gtau_wt <- NA_real_
+        }
 
         bounds_r <- vector("list", length(tau_grid))
         names(bounds_r) <- paste0("tau_", tau_grid)
@@ -641,23 +672,50 @@ for (method in method.list) {
                                dat_cal_tau_tmp[[TT.name]] <= upper_cal)
             } else NA_integer_
 
-            # Gtau_mode="tilted": coverage on the at-risk population {T>tau, C_tilde>tau}
-            # under the exp(Gtau_delta * t)-tilted TRUE censoring law, via the oracle
-            # weighting identity on the uncensored test data (survivors T>tau).
+            # At-risk estimand {T>tau, C_tilde>tau} evaluation on the uncensored test
+            # data (survivors T>tau), under the TRUE censoring law (delta = 0 for
+            # "estimated") or its exp(Gtau_delta * t)-tilt ("tilted"):
+            #   gtau_eval_method = "weighted": oracle weighting identity.
+            #   gtau_eval_method = "subgroup" (tilted only reaches here): draw the
+            #     membership indicator I(C_tilde>tau) ~ Bernoulli(w_i) — its exact
+            #     law — and take the plain subgroup mean; the weighted counterpart
+            #     is recorded alongside as a per-run noise gauge.
             w_gtau_test <- NULL
-            if (Gtau_mode == "tilted") {
+            at_risk_gtau_test <- NULL
+            if (needs_gtau_weights) {
                 surv_idx <- which(dat_test_tau_tmp[[TT.name]] > tau)
                 w_gtau_test <- rep(NA_real_, nrow(dat_test_tau_tmp))
                 if (length(surv_idx) > 0L) {
                     ids_s <- as.character(dat_test_tau_tmp[[id.name]][surv_idx])
+                    delta_eval_use <- if (Gtau_mode == "tilted") Gtau_delta else 0
                     w_gtau_test[surv_idx] <- compute_Gtau_true_tilted_linWB1(
-                        L_full_test_r[ids_s, , drop = FALSE], tau, Gtau_delta,
+                        L_full_test_r[ids_s, , drop = FALSE], tau, delta_eval_use,
                         change_times, dgm_parK)
-                    cov_gtau <- weighted_coverage_summary(
+                    cov_gtau_wt <- weighted_coverage_summary(
                         covered_T_test[surv_idx],
                         (upper_test - lower_test)[surv_idx],
                         w_gtau_test[surv_idx])
-                    tab_r$coverage_test_gtau[k] <- cov_gtau$coverage
+                    if (gtau_eval_method == "weighted") {
+                        tab_r$coverage_test_gtau[k] <- cov_gtau_wt$coverage
+                    } else {
+                        # Isolate the Bernoulli draws on a dedicated, deterministic
+                        # RNG stream so the calibration/generation streams are
+                        # untouched (results identical to a "weighted" run except
+                        # for the evaluation columns).
+                        if (!exists(".Random.seed", envir = .GlobalEnv)) set.seed(1L)
+                        rng_state <- get(".Random.seed", envir = .GlobalEnv)
+                        set.seed(seeds_split[r] + 7907L * k + 424243L)
+                        p_at_risk <- pmin(pmax(w_gtau_test[surv_idx], 0), 1)
+                        at_risk_gtau_test <- rep(NA_integer_, nrow(dat_test_tau_tmp))
+                        at_risk_gtau_test[surv_idx] <- rbinom(length(surv_idx), 1L, p_at_risk)
+                        assign(".Random.seed", rng_state, envir = .GlobalEnv)
+
+                        in_sub <- surv_idx[at_risk_gtau_test[surv_idx] == 1L]
+                        tab_r$coverage_test_gtau[k] <- if (length(in_sub) > 0L) {
+                            mean(covered_T_test[in_sub], na.rm = TRUE)
+                        } else NA_real_
+                        tab_r$coverage_test_gtau_wt[k] <- cov_gtau_wt$coverage
+                    }
                 }
             }
 
@@ -670,8 +728,9 @@ for (method in method.list) {
                 covered_X = covered_X_test,
                 covered_T = covered_T_test
             )
-            # tilted-only extra column (keeps other modes' bounds schema unchanged)
-            if (Gtau_mode == "tilted") test_bounds_df$w_gtau <- w_gtau_test
+            # Gtau-weighting extra columns (keep other modes' bounds schema unchanged)
+            if (needs_gtau_weights) test_bounds_df$w_gtau <- w_gtau_test
+            if (!is.null(at_risk_gtau_test)) test_bounds_df$at_risk_gtau <- at_risk_gtau_test
             bounds_r[[k]] <- list(
                 test = test_bounds_df,
                 cal = data.frame(
@@ -757,7 +816,8 @@ out_prefix <- paste0(
             xgb_cv_seed = xgb_cv_seed,
             xgb_cv_verbose = xgb_cv_verbose,
             Gtau_mode = Gtau_mode,
-            Gtau_delta = Gtau_delta
+            Gtau_delta = Gtau_delta,
+            gtau_eval_method = gtau_eval_method
         ),
         seeds = list(
             seeds = seeds,
@@ -822,7 +882,15 @@ config_matches_current <- function(cfg) {
         isTRUE(all.equal(cfg$alpha, alpha, check.attributes = FALSE)) &&
         isTRUE(all.equal(cfg$localization, localization, check.attributes = FALSE)) &&
         isTRUE(all.equal(cfg$Gtau_mode, Gtau_mode, check.attributes = FALSE)) &&
-        isTRUE(all.equal(cfg$Gtau_delta, Gtau_delta, check.attributes = FALSE))
+        isTRUE(all.equal(cfg$Gtau_delta, Gtau_delta, check.attributes = FALSE)) &&
+        # Evaluation method only matters when Gtau weighting is in play; legacy
+        # files (no gtau_eval_method) were "subgroup" for estimated, "weighted"
+        # for tilted.
+        (Gtau_mode == "one" ||
+             isTRUE(all.equal(
+                 if (!is.null(cfg$gtau_eval_method)) cfg$gtau_eval_method
+                 else if (identical(cfg$Gtau_mode, "estimated")) "subgroup" else "weighted",
+                 gtau_eval_method, check.attributes = FALSE)))
 }
 
 meta <- do.call(rbind, lapply(files_all, function(f) {
