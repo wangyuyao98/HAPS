@@ -1,0 +1,76 @@
+rm(list = ls())
+
+## Plot the Gtau tilted-censoring sensitivity study produced by
+## main_simu_gtau_tilt_sensitivity.R. For each tau, plots mean coverage (and
+## median length) vs the evaluation tilt delta_eval, with one curve per
+## calibration arm:
+##   - "one"                 (paper method; ignores the shift)
+##   - "estimated"           (tilt family, delta_cal = 0)
+##   - "matched" tilt        (delta_cal == delta_eval; the ideal oracle target)
+##   - fixed-delta_cal tilts (mismatch robustness), one curve per delta_cal.
+## Usage: Rscript main_plot_gtau_tilt_sensitivity.R <R> <n> <n_test> [alpha]
+
+if (!file.exists("src/gen_ICML_simu.R")) {
+    stop("Please run main_plot_gtau_tilt_sensitivity.R from the repository root directory.")
+}
+suppressMessages({ library(ggplot2); library(dplyr) })
+
+args  <- commandArgs(trailingOnly = TRUE)
+R      <- if (length(args) >= 1L) as.integer(args[[1L]]) else 200L
+n      <- if (length(args) >= 2L) as.integer(args[[2L]]) else 1000L
+n_test <- if (length(args) >= 3L) as.integer(args[[3L]]) else 1000L
+alpha  <- if (length(args) >= 4L) as.numeric(args[[4L]]) else 0.1
+
+folder  <- file.path("results", "linWB1", "gtau_tilt")
+infile  <- file.path(folder, sprintf("gtau_tilt_sensitivity_R%d_n%d_ntest%d_alpha%s.rds",
+                                     R, n, n_test, format(alpha)))
+if (!file.exists(infile)) stop("Missing results file: ", infile)
+obj <- readRDS(infile)
+res <- obj$results[obj$results$ok, ]
+delta_grid <- obj$config$delta_grid
+tau_grid   <- obj$config$tau_grid
+
+# Build an arm label per row.
+res$arm <- with(res, ifelse(
+    method == "one", "one (paper)",
+    ifelse(abs(delta_cal - delta_eval) < 1e-9, "tilted (matched)",
+           ifelse(method == "estimated", "estimated (delta_cal=0)",
+                  sprintf("tilted (delta_cal=%+.2f)", delta_cal)))))
+# Keep: one, matched, estimated(=delta_cal 0 line across delta_eval), and the two
+# canonical mismatch calibrations for a readable figure.
+keep_fixed <- c(sprintf("tilted (delta_cal=%+.2f)", -0.15),
+                sprintf("tilted (delta_cal=%+.2f)",  0.15),
+                "estimated (delta_cal=0)")
+res <- res[res$arm %in% c("one (paper)", "tilted (matched)", keep_fixed), ]
+
+agg <- res %>%
+    group_by(tau, arm, delta_eval) %>%
+    summarise(coverage = mean(coverage, na.rm = TRUE),
+              med_len  = mean(med_len,  na.rm = TRUE),
+              n_rep    = sum(is.finite(coverage)), .groups = "drop")
+agg$tau_lab <- factor(paste0("tau == ", agg$tau), levels = paste0("tau == ", tau_grid))
+
+if (!dir.exists(file.path(folder, "plots"))) dir.create(file.path(folder, "plots"))
+
+p_cov <- ggplot(agg, aes(delta_eval, coverage, colour = arm, shape = arm)) +
+    geom_hline(yintercept = 1 - alpha, linetype = "dashed", colour = "grey40") +
+    geom_line() + geom_point() +
+    facet_wrap(~ tau_lab, labeller = label_parsed) +
+    labs(x = expression(delta[eval]~"(evaluation censoring tilt)"),
+         y = "Mean survivor-conditional coverage",
+         colour = "Calibration arm", shape = "Calibration arm",
+         title = sprintf("Censoring-shift sensitivity (linWB1, R=%d, n=%d)", R, n)) +
+    theme_bw() + theme(legend.position = "bottom")
+
+p_len <- ggplot(agg, aes(delta_eval, med_len, colour = arm, shape = arm)) +
+    geom_line() + geom_point() +
+    facet_wrap(~ tau_lab, labeller = label_parsed) +
+    labs(x = expression(delta[eval]), y = "Mean of median interval length",
+         colour = "Calibration arm", shape = "Calibration arm") +
+    theme_bw() + theme(legend.position = "bottom")
+
+f_cov <- file.path(folder, "plots", sprintf("gtau_tilt_coverage_R%d_n%d.pdf", R, n))
+f_len <- file.path(folder, "plots", sprintf("gtau_tilt_length_R%d_n%d.pdf", R, n))
+ggsave(f_cov, p_cov, width = 10, height = 4)
+ggsave(f_len, p_len, width = 10, height = 4)
+cat("Saved:\n ", f_cov, "\n ", f_len, "\n")
