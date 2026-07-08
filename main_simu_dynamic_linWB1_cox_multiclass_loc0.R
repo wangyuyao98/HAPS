@@ -12,6 +12,7 @@ source("src/dynamicCP.R")   # IPCW (previous implementation)
 # Preserve IPCW-only implementation before loading the AIPCW implementation.
 dynamicCP_IPCW_split <- dynamicCP_split
 source("src/dynamicCP_AIPCW.R")      # IPCW + AIPCW implementation
+source("src/gtau_eval_helpers.R")    # oracle Gtau weights for Gtau_mode="tilted" evaluation
 
 library(survival)
 library(randomForestSRC)
@@ -128,13 +129,24 @@ format_tag_num <- function(x) {
 }
 Gtau_delta_tag <- format_tag_num(Gtau_delta)
 
+# Test-data censoring for coverage evaluation:
+#  - "one":       uncensored test; coverage on the survivor population {T > tau}.
+#  - "estimated": censored test (true DGM law); coverage on the X>tau subgroup
+#                 {T>tau, C>tau} via covered_T.
+#  - "tilted":    uncensored test; coverage on {T>tau, C_tilde>tau} with C_tilde
+#                 from the exp(delta t)-tilted TRUE censoring law, evaluated by the
+#                 oracle weighting identity (weights from gtau_eval_helpers.R). The
+#                 full covariate path is retained (return_L_full below) for the tilt.
 no_censoring_test <- switch(
     Gtau_mode,
     one = TRUE,
     estimated = FALSE,
-    tilted = stop("Gtau_mode='tilted' test-data simulation is not yet implemented in main_simu.R."),
+    tilted = TRUE,
     stop("Unknown Gtau_mode: ", Gtau_mode)
 )
+if (Gtau_mode == "tilted" && dgm_name != "linear_weibull") {
+    stop("Gtau_mode='tilted' evaluation weights are only implemented for dgm_name='linear_weibull'.")
+}
 
 TT.name <- "TT"
 train_ratio <- 0.5
@@ -322,8 +334,10 @@ for (method in method.list) {
             no_censoring = no_censoring_test,
             par = dgm_parK,
             rho = rho,
-            dgm_name = dgm_name
+            dgm_name = dgm_name,
+            return_L_full = (Gtau_mode == "tilted")   # full path needed for the tilt normalizer
         )
+        L_full_test_r <- if (Gtau_mode == "tilted") attr(dat_test_r, "L_full") else NULL
         
         if (!is.null(TT.name) && !(TT.name %in% colnames(dat_test_r))) {
             stop("TT.name=", TT.name, " not found in dat_test_r.")
@@ -346,7 +360,10 @@ for (method in method.list) {
             q50_len_test = NA_real_,
             q75_len_test = NA_real_
         )
-        
+        # Extra weighted-coverage column only under Gtau_mode="tilted" (keeps the
+        # "one"/"estimated" output schema unchanged / bit-identical).
+        if (Gtau_mode == "tilted") tab_r$coverage_test_gtau <- NA_real_
+
         bounds_r <- vector("list", length(tau_grid))
         names(bounds_r) <- paste0("tau_", tau_grid)
         
@@ -623,17 +640,40 @@ for (method in method.list) {
                 as.integer(lower_cal <= dat_cal_tau_tmp[[TT.name]] &
                                dat_cal_tau_tmp[[TT.name]] <= upper_cal)
             } else NA_integer_
-            
+
+            # Gtau_mode="tilted": coverage on the at-risk population {T>tau, C_tilde>tau}
+            # under the exp(Gtau_delta * t)-tilted TRUE censoring law, via the oracle
+            # weighting identity on the uncensored test data (survivors T>tau).
+            w_gtau_test <- NULL
+            if (Gtau_mode == "tilted") {
+                surv_idx <- which(dat_test_tau_tmp[[TT.name]] > tau)
+                w_gtau_test <- rep(NA_real_, nrow(dat_test_tau_tmp))
+                if (length(surv_idx) > 0L) {
+                    ids_s <- as.character(dat_test_tau_tmp[[id.name]][surv_idx])
+                    w_gtau_test[surv_idx] <- compute_Gtau_true_tilted_linWB1(
+                        L_full_test_r[ids_s, , drop = FALSE], tau, Gtau_delta,
+                        change_times, dgm_parK)
+                    cov_gtau <- weighted_coverage_summary(
+                        covered_T_test[surv_idx],
+                        (upper_test - lower_test)[surv_idx],
+                        w_gtau_test[surv_idx])
+                    tab_r$coverage_test_gtau[k] <- cov_gtau$coverage
+                }
+            }
+
+            test_bounds_df <- data.frame(
+                rep = r, tau = tau, id = dat_test_tau_tmp[[id.name]],
+                lower = lower_test, upper = upper_test,
+                X = dat_test_tau_tmp[[stop.name]],
+                T_true = if (!is.null(TT.name) && TT.name %in% names(dat_test_tau_tmp)) dat_test_tau_tmp[[TT.name]] else NA_real_,
+                w_ipcw = w_test_tmp,
+                covered_X = covered_X_test,
+                covered_T = covered_T_test
+            )
+            # tilted-only extra column (keeps other modes' bounds schema unchanged)
+            if (Gtau_mode == "tilted") test_bounds_df$w_gtau <- w_gtau_test
             bounds_r[[k]] <- list(
-                test = data.frame(
-                    rep = r, tau = tau, id = dat_test_tau_tmp[[id.name]],
-                    lower = lower_test, upper = upper_test,
-                    X = dat_test_tau_tmp[[stop.name]],
-                    T_true = if (!is.null(TT.name) && TT.name %in% names(dat_test_tau_tmp)) dat_test_tau_tmp[[TT.name]] else NA_real_,
-                    w_ipcw = w_test_tmp,
-                    covered_X = covered_X_test,
-                    covered_T = covered_T_test
-                ),
+                test = test_bounds_df,
                 cal = data.frame(
                     rep = r, tau = tau, id = dat_cal_tau_tmp[[id.name]],
                     lower = lower_cal, upper = upper_cal,

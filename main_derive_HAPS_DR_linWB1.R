@@ -9,6 +9,7 @@ source("src/gen_ICML_simu.R")
 source("src/helpers.R")
 source("src/helpers_AIPCW.R")
 source("src/dynamicCP_AIPCW.R")
+source("src/gtau_eval_helpers.R")   # weighted_coverage_summary for Gtau_mode="tilted"
 
 library(survival)
 library(randomForestSRC)
@@ -148,7 +149,7 @@ make_dr_bounds <- function(base_bounds, fit, which_set = c("test", "cal")) {
 summarize_dr_bounds <- function(bt, bc) {
     len_test <- bt$upper - bt$lower
     len_cal <- bc$upper - bc$lower
-    data.frame(
+    out <- data.frame(
         coverage_cal_ipcw = mean(bc$w_ipcw * bc$covered_X, na.rm = TRUE) / mean(bc$w_ipcw, na.rm = TRUE),
         coverage_test_ipcw = mean(bt$w_ipcw * bt$covered_X, na.rm = TRUE) / mean(bt$w_ipcw, na.rm = TRUE),
         coverage_cal_true = if (all(is.na(bc$covered_T))) NA_real_ else mean(bc$covered_T, na.rm = TRUE),
@@ -159,6 +160,16 @@ summarize_dr_bounds <- function(bt, bc) {
         q50_len_test = as.numeric(stats::quantile(len_test, 0.50, na.rm = TRUE)),
         q75_len_test = as.numeric(stats::quantile(len_test, 0.75, na.rm = TRUE))
     )
+    # Gtau_mode="tilted": weighted survivor-conditional coverage on {T>tau, C_tilde>tau}
+    # using the tilted oracle weights carried in the base file's test bounds (w_gtau).
+    if ("w_gtau" %in% names(bt)) {
+        surv <- is.finite(bt$w_gtau)
+        out$coverage_test_gtau <- if (any(surv)) {
+            wc <- weighted_coverage_summary(bt$covered_T[surv], len_test[surv], bt$w_gtau[surv])
+            wc$coverage
+        } else NA_real_
+    }
+    out
 }
 
 derive_one_target <- function(target) {
@@ -173,7 +184,11 @@ derive_one_target <- function(target) {
     R <- cfg$R
     tau_grid <- cfg$tau_grid
     dgm_name <- cfg$dgm_name %||% "linear_weibull"
-    no_censoring_test <- identical(cfg$Gtau_mode, "one")
+    # "tilted" (like "one") uses uncensored test data; its coverage is evaluated
+    # on the at-risk population via the w_gtau weights carried in the base file's
+    # bounds. "estimated" uses censored test data (X>tau subgroup).
+    gtau_mode_cfg <- cfg$Gtau_mode %||% "one"
+    no_censoring_test <- gtau_mode_cfg %in% c("one", "tilted")
 
     results_summary <- vector("list", R)
     results_bounds <- vector("list", R)
@@ -226,6 +241,7 @@ derive_one_target <- function(target) {
             q50_len_test = NA_real_,
             q75_len_test = NA_real_
         )
+        if (gtau_mode_cfg == "tilted") tab_r$coverage_test_gtau <- NA_real_
         bounds_r <- vector("list", length(tau_grid))
         names(bounds_r) <- paste0("tau_", tau_grid)
         survC_r <- vector("list", length(tau_grid))
