@@ -776,6 +776,9 @@ out_prefix <- paste0(
         warning("Output file already exists and will be overwritten: ", out_rds)
     }
     
+    # gtau_eval_method is persisted only when it is meaningful (non-"one" modes),
+    # so Gtau_mode="one" result files keep their exact legacy config schema
+    # (bit-identical outputs). It is appended right after save_obj below.
     save_obj <- list(
         config = list(
             setup = setup,
@@ -816,8 +819,7 @@ out_prefix <- paste0(
             xgb_cv_seed = xgb_cv_seed,
             xgb_cv_verbose = xgb_cv_verbose,
             Gtau_mode = Gtau_mode,
-            Gtau_delta = Gtau_delta,
-            gtau_eval_method = gtau_eval_method
+            Gtau_delta = Gtau_delta
         ),
         seeds = list(
             seeds = seeds,
@@ -839,7 +841,10 @@ out_prefix <- paste0(
             )
         )
     )
-    
+    if (Gtau_mode != "one") {
+        save_obj$config$gtau_eval_method <- gtau_eval_method
+    }
+
     saveRDS(save_obj, file = out_rds)
     cat("Saved simulation bundle to:\n  ", out_rds, "\n", sep = "")
 }
