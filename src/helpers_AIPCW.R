@@ -3785,7 +3785,10 @@ build_h_tau_matrix_cal <- function(
         tol = 1e-12,
         precomp = NULL,
         precomp_only = FALSE,
-        fast_rsf_predict = FALSE
+        fast_rsf_predict = FALSE,
+        support_upper = Inf   # known event-support bound: at theta == 0 the
+                              # candidate set is (tau, support_upper] (see
+                              # .candidate_bounds_at_theta in dynamicCP_AIPCW.R)
 ) {
     # precomp: an optional list of theta-INDEPENDENT objects returned by a prior
     #   call with precomp_only = TRUE. Passing it back avoids recomputing the
@@ -3987,8 +3990,14 @@ build_h_tau_matrix_cal <- function(
     S_u_left_list  <- pc$S_u_left_list
 
     ## ---------------- prediction quantiles q_theta, q_{1-theta} (theta-DEPENDENT) ----------------
-    q_lo_tau <- surv_quantile_vec_from_pred(pred_time, pred_surv_cal, beta = theta)
-    q_hi_tau <- surv_quantile_vec_from_pred(pred_time, pred_surv_cal, beta = 1 - theta)
+    if (is.finite(support_upper) && theta == 0) {
+        # widest candidate member under a known bounded support: (tau, support_upper]
+        q_lo_tau <- rep(tau, nrow(pred_surv_cal))
+        q_hi_tau <- rep(support_upper, nrow(pred_surv_cal))
+    } else {
+        q_lo_tau <- surv_quantile_vec_from_pred(pred_time, pred_surv_cal, beta = theta)
+        q_hi_tau <- surv_quantile_vec_from_pred(pred_time, pred_surv_cal, beta = 1 - theta)
+    }
 
     # expand to output rows by id; non-tau ids remain NA (expected when row_data="all")
     q_lo <- rep(NA_real_, n)
