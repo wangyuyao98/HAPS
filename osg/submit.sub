@@ -1,0 +1,31 @@
+exp_name = $(experiment_name:gtau_grid)
+
+universe = vanilla
+
+log = ../logs/osg/$(exp_name)/condor/condor.$(Cluster).$(Process).job$(job_id).log
+output = ../logs/osg/$(exp_name)/condor/stdout.$(Cluster).$(Process).job$(job_id).txt
+error = ../logs/osg/$(exp_name)/condor/stderr.$(Cluster).$(Process).job$(job_id).txt
+
++SingularityImage = "osdf:///ospool/ap41/data/yuyao.wang/dCP1.sif"
+
+should_transfer_files = YES
+when_to_transfer_output = ON_EXIT
+
+executable = run.sh
+arguments = $(job_id)
+
+transfer_input_files = run.sh, gtau_job.R, ../src, jobs/$(exp_name)/configs/job_$(job_id).rds
+transfer_output_files = result.rds
+transfer_output_remaps = "result.rds = ../results/osg/$(exp_name)/raw/$(result_relpath)"
+
+request_cpus = 1
+request_memory = $(request_memory)
+request_disk = $(request_disk)
+
+# Retry transient failures (eviction, bad node) up to twice.
+max_retries = 2
+
+# queue_file can be overridden to resubmit a subset, e.g. a queue_retry.txt
+# holding only the lines of failed jobs:
+#   condor_submit experiment_name=<exp> queue_file=queue_retry.txt submit.sub
+queue job_id, result_relpath, request_memory, request_disk from jobs/$(exp_name)/$(queue_file:queue.txt)
