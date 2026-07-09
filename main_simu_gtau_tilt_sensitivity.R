@@ -96,6 +96,32 @@ seeds       <- sample(1e7, R, replace = FALSE)
 seeds_test  <- sample(1e7, R, replace = FALSE)
 seeds_split <- sample(1e7, R, replace = FALSE)
 
+## --------------------- Output file + checkpointing -------------------
+## The directory is re-created defensively at EVERY save (an external cleanup
+## of results/ during a long run must not be able to lose finished work), and
+## partial results are checkpointed every `checkpoint_every` replications so a
+## crash costs minutes, not hours. meta$complete marks the final save.
+outfile <- file.path(folder, sprintf("gtau_tilt_sensitivity_R%d_n%d_ntest%d_alpha%s.rds",
+                                     R, n, n_test, format(alpha)))
+checkpoint_every <- 10L
+save_results <- function(rows_list, completed_reps, elapsed_sec) {
+    dir.create(dirname(outfile), recursive = TRUE, showWarnings = FALSE)
+    out <- list(
+        results = do.call(rbind, rows_list),
+        config = list(setup = setup, dgm_name = dgm_name, rho = rho, n = n, n_test = n_test,
+                      R = R, alpha = alpha, tau_grid = tau_grid, delta_grid = delta_grid,
+                      model.pred = model.pred, model.C = model.C, model.S = model.S,
+                      model.Xi = model.Xi, change_times = change_times, dgm_parK = dgm_parK),
+        seeds = list(seeds = seeds, seeds_test = seeds_test, seeds_split = seeds_split),
+        meta = list(script = "main_simu_gtau_tilt_sensitivity.R",
+                    elapsed_sec = elapsed_sec,
+                    completed_reps = completed_reps,
+                    complete = (completed_reps == R))
+    )
+    saveRDS(out, outfile)
+    invisible(out)
+}
+
 ## ------------------------- Calibration wrapper -----------------------
 calibrate <- function(dat_long, dat_test, tau, gtau_mode, gtau_delta, seed_split) {
     tryCatch(
@@ -181,24 +207,18 @@ for (r in seq_len(R)) {
                 eval_rows(fit, method, dcal, tau, r, L_full, TT_by_id))
         }
     }
+
+    if (r %% checkpoint_every == 0L && r < R) {
+        save_results(rows, r, proc.time()[["elapsed"]] - t0)
+        cat(sprintf("  [checkpoint saved through rep %d]\n", r))
+    }
 }
 res <- do.call(rbind, rows)
 elapsed <- proc.time()[["elapsed"]] - t0
 cat(sprintf("done in %.1f min\n", elapsed / 60))
 
 ## --------------------------- Save ------------------------------------
-out <- list(
-    results = res,
-    config = list(setup = setup, dgm_name = dgm_name, rho = rho, n = n, n_test = n_test,
-                  R = R, alpha = alpha, tau_grid = tau_grid, delta_grid = delta_grid,
-                  model.pred = model.pred, model.C = model.C, model.S = model.S,
-                  model.Xi = model.Xi, change_times = change_times, dgm_parK = dgm_parK),
-    seeds = list(seeds = seeds, seeds_test = seeds_test, seeds_split = seeds_split),
-    meta = list(script = "main_simu_gtau_tilt_sensitivity.R", elapsed_sec = elapsed)
-)
-outfile <- file.path(folder, sprintf("gtau_tilt_sensitivity_R%d_n%d_ntest%d_alpha%s.rds",
-                                     R, n, n_test, format(alpha)))
-saveRDS(out, outfile)
+save_results(rows, R, elapsed)
 cat("Saved:", outfile, "\n")
 
 ## ----------------- Quick console summary (matched vs one) ------------
