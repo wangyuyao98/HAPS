@@ -33,6 +33,7 @@ source("src/helpers_AIPCW.R")
 source("src/dynamicCP.R")
 source("src/dynamicCP_AIPCW.R")
 source("src/gtau_eval_helpers.R")
+source("src/linWB_dgm_registry.R")
 
 suppressMessages({
     library(survival)
@@ -44,21 +45,31 @@ if (!requireNamespace("xgboost", quietly = TRUE)) {
 }
 
 ## ----------------------------- Config --------------------------------
+## CLI: R n n_test [setup]   with setup in {linWB1 (default), linWB2}.
+## linWB1 = original paper DGM1 (unbounded support; widest set from the training
+## grid; positivity via trim.C -- see docs/dgm_positivity_notes.md).
+## linWB2 = positivity-respecting DGM (T truncated at T_max = 20; retuned
+## censoring; widest candidate set = (tau, T_max], so Algorithm 1 is feasible
+## by construction).
 setup    <- "linWB1"
 dgm_name <- "linear_weibull"
-folder   <- file.path("results", setup, "gtau_tilt")
-if (!dir.exists(folder)) dir.create(folder, recursive = TRUE)
 
-rho    <- 0.3
+R      <- 200
 n      <- 1000
 n_test <- 1000
-R      <- 200
 
 args <- commandArgs(trailingOnly = TRUE)
 if (length(args) >= 1L && nzchar(args[[1L]])) R      <- as.integer(args[[1L]])
 if (length(args) >= 2L && nzchar(args[[2L]])) n      <- as.integer(args[[2L]])
 if (length(args) >= 3L && nzchar(args[[3L]])) n_test <- as.integer(args[[3L]])
+if (length(args) >= 4L && nzchar(args[[4L]])) setup  <- args[[4L]]
 stopifnot(is.finite(R), R >= 1L, is.finite(n), n >= 10L, is.finite(n_test), n_test >= 10L)
+
+dgm    <- get_linWB_dgm_par(setup)     # validates setup
+rho    <- dgm$rho
+T_max  <- dgm$T_max                    # Inf for linWB1 (legacy behavior everywhere)
+folder <- file.path("results", setup, "gtau_tilt")
+if (!dir.exists(folder)) dir.create(folder, recursive = TRUE)
 
 # variable names
 start.name <- "start"; stop.name <- "stop"; event.name <- "event"
@@ -77,18 +88,16 @@ alpha             <- 0.1
 theta_grid_AIPCW  <- seq(0, 0.5, by = 0.01)
 train_ratio       <- 0.5
 
-# DGM1 parameters (linWB1)
-change_times <- c(3, 6)
-dgm_parK <- list(
-    shape_T = c(4, 4, 5), shape_C = c(3, 3, 3),
-    beta_T0 = c(-8, -8, -5), beta_TL = c(1, 2, 3),
-    beta_C0 = c(-6, -6, -5), beta_CL = c(2, 2, 2)
-)
+# DGM parameters from the registry (linWB1 = paper DGM1 unchanged; linWB2 =
+# positivity-respecting variant -- see src/linWB_dgm_registry.R)
+change_times <- dgm$change_times
+dgm_parK     <- dgm$par
 tau_grid   <- c(0, change_times)                 # 0, 3, 6
-delta_grid <- c(-0.30, -0.15, 0, 0.15, 0.30)     # tilt grid (cal and eval share it)
+delta_grid <- dgm$delta_grid                     # per-setup tilt grid (cal and eval
+                                                 # share it; see the registry notes)
 
-cat(sprintf("Gtau tilt sensitivity | R=%d n=%d n_test=%d | tau={%s} | delta={%s}\n",
-            R, n, n_test, paste(tau_grid, collapse=","), paste(delta_grid, collapse=",")))
+cat(sprintf("Gtau tilt sensitivity | setup=%s | R=%d n=%d n_test=%d | tau={%s} | delta={%s}\n",
+            setup, R, n, n_test, paste(tau_grid, collapse=","), paste(delta_grid, collapse=",")))
 
 ## --------------------------- Seeds -----------------------------------
 set.seed(123)
@@ -118,6 +127,12 @@ save_results <- function(rows_list, completed_reps, elapsed_sec) {
                     completed_reps = completed_reps,
                     complete = (completed_reps == R))
     )
+    # setup-specific fields added conditionally so linWB1 result files keep the
+    # exact schema of the existing runs (bit-comparable across driver versions)
+    if (is.finite(T_max)) {
+        out$config$T_max <- T_max
+        out$config$support_upper <- T_max
+    }
     saveRDS(out, outfile)
     invisible(out)
 }
@@ -138,7 +153,9 @@ calibrate <- function(dat_long, dat_test, tau, gtau_mode, gtau_delta, seed_split
             seed = seed_split, train_ratio = train_ratio,
             localization = FALSE, censoring_method = "piecewise",
             Gtau_mode = gtau_mode, Gtau_delta = gtau_delta,
-            return_on_aipcw_fail = TRUE
+            return_on_aipcw_fail = TRUE,
+            support_upper = T_max   # Inf for linWB1 (legacy candidate sets);
+                                    # (tau, T_max] widest member for linWB2
         ),
         error = function(e) list(error = TRUE, msg = conditionMessage(e))
     )
@@ -184,11 +201,12 @@ for (r in seq_len(R)) {
 
     dat_tr <- simulate_dataset_long(
         n = n, seed = seeds[r], change_times = change_times, tau_max = Inf,
-        no_censoring = FALSE, par = dgm_parK, rho = rho, dgm_name = dgm_name)
+        no_censoring = FALSE, par = dgm_parK, rho = rho, dgm_name = dgm_name,
+        T_max = T_max)
     dat_te <- simulate_dataset_long(
         n = n_test, seed = seeds_test[r], change_times = change_times, tau_max = Inf,
         no_censoring = TRUE, par = dgm_parK, rho = rho, dgm_name = dgm_name,
-        return_L_full = TRUE)
+        return_L_full = TRUE, T_max = T_max)
     L_full   <- attr(dat_te, "L_full")
     rownames(L_full) <- as.character(seq_len(n_test))
     TT_by_id <- setNames(dat_te[[TT.name]][match(seq_len(n_test), dat_te[[id.name]])],

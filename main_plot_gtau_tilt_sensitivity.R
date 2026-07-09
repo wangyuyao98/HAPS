@@ -8,7 +8,8 @@ rm(list = ls())
 ##   - "estimated"           (tilt family, delta_cal = 0)
 ##   - "matched" tilt        (delta_cal == delta_eval; the ideal oracle target)
 ##   - fixed-delta_cal tilts (mismatch robustness), one curve per delta_cal.
-## Usage: Rscript main_plot_gtau_tilt_sensitivity.R <R> <n> <n_test> [alpha]
+## Usage: Rscript main_plot_gtau_tilt_sensitivity.R <R> <n> <n_test> [alpha] [setup]
+## setup in {linWB1 (default), linWB2} selects results/<setup>/gtau_tilt/.
 
 if (!file.exists("src/gen_ICML_simu.R")) {
     stop("Please run main_plot_gtau_tilt_sensitivity.R from the repository root directory.")
@@ -20,8 +21,10 @@ R      <- if (length(args) >= 1L) as.integer(args[[1L]]) else 200L
 n      <- if (length(args) >= 2L) as.integer(args[[2L]]) else 1000L
 n_test <- if (length(args) >= 3L) as.integer(args[[3L]]) else 1000L
 alpha  <- if (length(args) >= 4L) as.numeric(args[[4L]]) else 0.1
+setup  <- if (length(args) >= 5L && nzchar(args[[5L]])) args[[5L]] else "linWB1"
+if (!setup %in% c("linWB1", "linWB2")) stop("setup must be 'linWB1' or 'linWB2'.")
 
-folder  <- file.path("results", "linWB1", "gtau_tilt")
+folder  <- file.path("results", setup, "gtau_tilt")
 infile  <- file.path(folder, sprintf("gtau_tilt_sensitivity_R%d_n%d_ntest%d_alpha%s.rds",
                                      R, n, n_test, format(alpha)))
 if (!file.exists(infile)) stop("Missing results file: ", infile)
@@ -70,7 +73,7 @@ p_cov <- ggplot(agg, aes(delta_eval, coverage, colour = arm, shape = arm)) +
     labs(x = expression(delta[eval]~"(evaluation censoring tilt)"),
          y = "Mean survivor-conditional coverage",
          colour = "Calibration arm", shape = "Calibration arm",
-         title = sprintf("Censoring-shift sensitivity (linWB1, R=%d, n=%d)", R, n),
+         title = sprintf("Censoring-shift sensitivity (%s, R=%d, n=%d)", setup, R, n),
          caption = sprintf(
              "Infeasible calibrations (no feasible theta) excluded from means; max rate %.1f%% (see %s).",
              100 * max_infeas, "gtau_tilt_infeasibility_*.csv")) +

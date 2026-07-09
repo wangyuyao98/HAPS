@@ -33,6 +33,9 @@ get_linWB_dgm_par <- function(setup = c("linWB1", "linWB2")) {
             T_max = Inf,
             change_times = c(3, 6),
             rho = 0.3,
+            # tilt grid for the sensitivity study; spans ~(-25,+12)pp at-risk
+            # shift at tau=3 and ~(-34,+18)pp at tau=6 under this censoring law
+            delta_grid = c(-0.30, -0.15, 0, 0.15, 0.30),
             description = "Paper DGM1 (unchanged); positivity via trim.C only."
         ),
         linWB2 = list(
@@ -47,6 +50,11 @@ get_linWB_dgm_par <- function(setup = c("linWB1", "linWB2")) {
             T_max = 20,
             change_times = c(3, 6),
             rho = 0.3,
+            # recalibrated: linWB2's flatter late censoring makes exp(delta*t)
+            # tilts far more responsive (linWB1's +-0.30 would collapse the
+            # at-risk fraction to 0.06 at tau=6). This grid spans
+            # ~(-20,+13)pp at tau=3 and ~(-31,+23)pp at tau=6.
+            delta_grid = c(-0.08, -0.04, 0, 0.04, 0.08),
             description = paste0(
                 "Positivity-respecting variant: same event law truncated at T_max=20; ",
                 "censoring retuned so G(T_max|path) >= ~0.10 (eta) with ~31% censoring; ",
