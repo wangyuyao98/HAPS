@@ -9,6 +9,19 @@ approximate and refer to the `code-improvements` branch.
 These items were reviewed and **left as-is on purpose** (the code is what produced
 the reported results); nothing here is a pending code change.
 
+## Repository history
+
+- `v1.0-original` (tag, commit `e8eeef0`) — the original code as of the
+  arXiv:2605.06581v1 submission. Use this for exact reproduction of the paper.
+- `v1.1-code-improvements` (tag, commit `1dee016`) — after the code review +
+  speedup pass: robustness fixes and result-preserving speedups; the full
+  default-path smoke suite verified bit-identical to `v1.0-original`. Full diff:
+  https://github.com/wangyuyao98/HAPS/compare/v1.0-original...v1.1-code-improvements
+- General-G_tau development (completed `Gtau_mode = "estimated"`/`"tilted"`,
+  weighted at-risk evaluation, censoring-shift sensitivity study, `linWB2` DGM,
+  `support_upper` candidate bound) — branch `gtau-modes`, reviewed and merged via
+  GitHub pull request (see the repository's pull-request history).
+
 ## 1. Deviations from the paper's stated algorithm (in the shipped pipeline)
 
 These are deliberate implementation choices that differ from the paper text and
