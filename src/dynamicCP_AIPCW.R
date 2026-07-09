@@ -2,6 +2,23 @@
 ##  -- 2 splits: one for training the prediction model and estimate the censoring model (nuisance parameter); 
 ##               one for computing the miscoverage rate
 
+# Candidate-interval endpoints at a grid value theta (code scale, [0, 0.5]).
+# With a KNOWN bounded event-time support (support_upper finite), the widest
+# grid member theta == 0 is (tau, support_upper] -- the full survivor support --
+# instead of the training-prediction-grid extremes. This (i) keeps the candidate
+# family fixed given the training data only, and (ii) makes Algorithm 1 feasible
+# by construction: every uncensored calibration survivor is covered at theta = 0,
+# so the estimating function there is sum_i w_i * alpha >= 0 for any nonnegative
+# weights. Default support_upper = Inf reproduces the previous endpoints exactly.
+.candidate_bounds_at_theta <- function(theta, pred_time, pred_surv, tau, support_upper) {
+    if (is.finite(support_upper) && theta == 0) {
+        n <- nrow(pred_surv)
+        return(list(lo = rep(tau, n), hi = rep(support_upper, n)))
+    }
+    list(lo = surv_quantile_vec_from_pred(pred_time, pred_surv, beta = theta),
+         hi = surv_quantile_vec_from_pred(pred_time, pred_surv, beta = 1 - theta))
+}
+
 .select_theta_index_from_curve <- function(theta_grid, curve,
                                           selector = c("first_crossing", "rightmost_nonnegative"),
                                           tol = 0) {
@@ -194,6 +211,14 @@ dynamicCP_AIPCW_split <- function(dat, dat_test = NULL, start.name, stop.name, e
                              AIPCW_theta_tol = 0,
                             return_Gfits = FALSE,
                             return_on_aipcw_fail = FALSE,
+                            # Known upper bound of the event-time support (e.g. the
+                            # linWB2 DGM's T_max, or an administrative horizon).
+                            # When finite, the widest candidate set (grid value
+                            # theta = 0) is (tau, support_upper] -- a constant, so
+                            # the candidate family stays training-fixed and
+                            # Algorithm 1 is feasible by construction. Default Inf
+                            # keeps all candidate sets exactly as before.
+                            support_upper = Inf,
                             # Opt-in speedup for rsf nuisance predictions: hoists
                             # predict.rfsrc() calls (one per interval / one per tau
                             # instead of per evaluation time / per theta). Predicted
@@ -248,6 +273,11 @@ dynamicCP_AIPCW_split <- function(dat, dat_test = NULL, start.name, stop.name, e
     }
     if (length(Gtau_delta) != 1L || !is.finite(Gtau_delta)) {
         stop("Gtau_delta must be a finite scalar numeric value.")
+    }
+    support_upper <- as.numeric(support_upper)
+    if (length(support_upper) != 1L || is.na(support_upper) ||
+        (is.finite(support_upper) && support_upper <= tau)) {
+        stop("support_upper must be Inf or a finite scalar greater than tau.")
     }
     if (Gtau_mode %in% c("estimated", "tilted") && censoring_method != "piecewise") {
         stop("Gtau_mode='", Gtau_mode, "' currently requires censoring_method='piecewise'.")
@@ -933,8 +963,9 @@ dynamicCP_AIPCW_split <- function(dat, dat_test = NULL, start.name, stop.name, e
         for (jj in seq_along(theta_grid)) {
             theta_j <- theta_grid[jj]
 
-            lo_j <- surv_quantile_vec_from_pred(pred_time, pred_surv_cal, beta = theta_j)
-            hi_j <- surv_quantile_vec_from_pred(pred_time, pred_surv_cal, beta = 1 - theta_j)
+            qb_j <- .candidate_bounds_at_theta(theta_j, pred_time, pred_surv_cal, tau, support_upper)
+            lo_j <- qb_j$lo
+            hi_j <- qb_j$hi
 
             inside_j <- as.numeric(X_cal > lo_j & X_cal < hi_j)
             U_vec <- (Delta_cal / pmax(dat_cal_tau[[denom_col]], trim.C)) *
@@ -952,10 +983,12 @@ dynamicCP_AIPCW_split <- function(dat, dat_test = NULL, start.name, stop.name, e
         theta_index_lower_IPCW <- max(idx_nonneg)
         theta_hat_IPCW <- theta_grid[theta_index_lower_IPCW]
 
-        lower_IPCW_cal <- surv_quantile_vec_from_pred(pred_time, pred_surv_cal, beta = theta_hat_IPCW)
-        lower_IPCW_test <- surv_quantile_vec_from_pred(pred_time, pred_surv_test, beta = theta_hat_IPCW)
-        upper_IPCW_cal <- surv_quantile_vec_from_pred(pred_time, pred_surv_cal, beta = 1 - theta_hat_IPCW)
-        upper_IPCW_test <- surv_quantile_vec_from_pred(pred_time, pred_surv_test, beta = 1 - theta_hat_IPCW)
+        qb_cal <- .candidate_bounds_at_theta(theta_hat_IPCW, pred_time, pred_surv_cal, tau, support_upper)
+        qb_test <- .candidate_bounds_at_theta(theta_hat_IPCW, pred_time, pred_surv_test, tau, support_upper)
+        lower_IPCW_cal <- qb_cal$lo
+        lower_IPCW_test <- qb_test$lo
+        upper_IPCW_cal <- qb_cal$hi
+        upper_IPCW_test <- qb_test$hi
 
         lower_model_cal <- surv_quantile_vec_from_pred(pred_time, pred_surv_cal, beta = alpha / 2)
         lower_model_test <- surv_quantile_vec_from_pred(pred_time, pred_surv_test, beta = alpha / 2)
@@ -1322,8 +1355,9 @@ dynamicCP_AIPCW_split <- function(dat, dat_test = NULL, start.name, stop.name, e
     for (jj in seq_along(theta_grid)) {
         theta_j <- theta_grid[jj]
         
-        lo_j <- surv_quantile_vec_from_pred(pred_time, pred_surv_cal, beta = theta_j)
-        hi_j <- surv_quantile_vec_from_pred(pred_time, pred_surv_cal, beta = 1 - theta_j)
+        qb_j <- .candidate_bounds_at_theta(theta_j, pred_time, pred_surv_cal, tau, support_upper)
+        lo_j <- qb_j$lo
+        hi_j <- qb_j$hi
         
         # Open interval indicator for C_{tau,theta}
         inside_j <- as.numeric(X_cal > lo_j & X_cal < hi_j)
@@ -1344,13 +1378,13 @@ dynamicCP_AIPCW_split <- function(dat, dat_test = NULL, start.name, stop.name, e
     theta_hat_IPCW <- theta_grid[theta_index_lower_IPCW]
     
     
-    # Compute the IPCW lower bound
-    lower_IPCW_cal <- surv_quantile_vec_from_pred(pred_time, pred_surv_cal, beta = theta_hat_IPCW)
-    lower_IPCW_test <- surv_quantile_vec_from_pred(pred_time, pred_surv_test, beta = theta_hat_IPCW)
-    
-    # Compute the IPCW upper bound
-    upper_IPCW_cal <- surv_quantile_vec_from_pred(pred_time, pred_surv_cal, beta = 1 - theta_hat_IPCW)
-    upper_IPCW_test <- surv_quantile_vec_from_pred(pred_time, pred_surv_test, beta = 1 - theta_hat_IPCW)
+    # Compute the IPCW lower/upper bounds
+    qb_ipcw_cal <- .candidate_bounds_at_theta(theta_hat_IPCW, pred_time, pred_surv_cal, tau, support_upper)
+    qb_ipcw_test <- .candidate_bounds_at_theta(theta_hat_IPCW, pred_time, pred_surv_test, tau, support_upper)
+    lower_IPCW_cal <- qb_ipcw_cal$lo
+    lower_IPCW_test <- qb_ipcw_test$lo
+    upper_IPCW_cal <- qb_ipcw_cal$hi
+    upper_IPCW_test <- qb_ipcw_test$hi
 
     lower_model_cal <- surv_quantile_vec_from_pred(pred_time, pred_surv_cal, beta = alpha / 2)
     lower_model_test <- surv_quantile_vec_from_pred(pred_time, pred_surv_test, beta = alpha / 2)
@@ -1408,8 +1442,9 @@ dynamicCP_AIPCW_split <- function(dat, dat_test = NULL, start.name, stop.name, e
         }
         
         # Build C_tau(theta) on training ids (for fitting xi_k on training data)
-        q_lo_tr <- surv_quantile_vec_from_pred(pred_time, pred_surv_tr, beta = theta_aug)
-        q_hi_tr <- surv_quantile_vec_from_pred(pred_time, pred_surv_tr, beta = 1 - theta_aug)
+        qb_tr <- .candidate_bounds_at_theta(theta_aug, pred_time, pred_surv_tr, tau, support_upper)
+        q_lo_tr <- qb_tr$lo
+        q_hi_tr <- qb_tr$hi
         Ctau_tr_df <- build_Ctau_df(ids_tr_all, idx_tr_tau_in_all, q_lo_tr, q_hi_tr,
                                     g_tau_tau = Gtau_tr_tau)
         
@@ -1481,7 +1516,8 @@ dynamicCP_AIPCW_split <- function(dat, dat_test = NULL, start.name, stop.name, e
             mask_after_X = TRUE,
             after_X_value = NA_real_,
             precomp = h_precomp,
-            fast_rsf_predict = fast_rsf_predict
+            fast_rsf_predict = fast_rsf_predict,
+            support_upper = support_upper
         )
         
         idx_h_all <- match(ids_cal_all, as.character(h_obj$ids))
@@ -1588,10 +1624,12 @@ dynamicCP_AIPCW_split <- function(dat, dat_test = NULL, start.name, stop.name, e
     }
     theta_hat_AIPCW <- theta_grid[theta_index_AIPCW]
     
-    lower_AIPCW_cal <- surv_quantile_vec_from_pred(pred_time, pred_surv_cal, beta = theta_hat_AIPCW)
-    lower_AIPCW_test <- surv_quantile_vec_from_pred(pred_time, pred_surv_test, beta = theta_hat_AIPCW)
-    upper_AIPCW_cal <- surv_quantile_vec_from_pred(pred_time, pred_surv_cal, beta = 1 - theta_hat_AIPCW)
-    upper_AIPCW_test <- surv_quantile_vec_from_pred(pred_time, pred_surv_test, beta = 1 - theta_hat_AIPCW)
+    qb_a_cal <- .candidate_bounds_at_theta(theta_hat_AIPCW, pred_time, pred_surv_cal, tau, support_upper)
+    qb_a_test <- .candidate_bounds_at_theta(theta_hat_AIPCW, pred_time, pred_surv_test, tau, support_upper)
+    lower_AIPCW_cal <- qb_a_cal$lo
+    lower_AIPCW_test <- qb_a_test$lo
+    upper_AIPCW_cal <- qb_a_cal$hi
+    upper_AIPCW_test <- qb_a_test$hi
     
     coverage_AIPCW_cal  <- mean(w_cal  * (lower_AIPCW_cal  <= dat_cal_tau[[stop.name]]  & dat_cal_tau[[stop.name]]  <= upper_AIPCW_cal)) / mean(w_cal)
     coverage_AIPCW_test <- mean(w_test * (lower_AIPCW_test <= dat_test_tau[[stop.name]] & dat_test_tau[[stop.name]] <= upper_AIPCW_test)) / mean(w_test)

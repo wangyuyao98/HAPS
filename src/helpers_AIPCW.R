@@ -2658,7 +2658,27 @@ fit_Yk_condmean_at_tk <- function(
         stop("fit_Yk_condmean_at_tk(): no uncensored weighted observations to fit regression.")
     }
     dat_fit <- dat_k[fit_idx, , drop = FALSE]
-    
+
+    # The 3-class construction of 'xgb_multiclass' identifies E[Y_tilde | L] only
+    # because Y_tilde takes the three values {0, -(1-alpha), alpha}. When a
+    # nonunit g_tau multiplies the pseudo-outcome (Gtau_mode = "estimated" or
+    # "tilted"), Y_tilde is no longer 3-valued and a classification model is
+    # conceptually inapplicable: computing pmat %*% value_map would silently
+    # drop the g_tau factor and target a different estimand than the regression
+    # branches. Fail loudly instead. Inert when g_tau is identically 1
+    # (Gtau_mode = "one", the paper's setting).
+    if (model == "xgb_multiclass" && use_g_tau_col) {
+        g_fit <- g_tau_vec[fit_idx]
+        g_active <- g_fit[dat_fit$Y_class != "zero" & is.finite(g_fit)]
+        if (length(g_active) > 0 && any(abs(g_active - 1) > 1e-12)) {
+            stop("fit_Yk_condmean_at_tk(): model='xgb_multiclass' requires the ",
+                 "pseudo-outcome to take exactly the three values {0, -(1-alpha), alpha}, ",
+                 "but a nonunit '", g_tau.name, "' factor is present (Gtau_mode != 'one'), ",
+                 "so Y_tilde = g_tau * (...) is no longer 3-valued. ",
+                 "Use a regression Xi model instead (e.g. model = 'xgb_reg', 'lm', 'rsf', or 'hal_reg').")
+        }
+    }
+
     ## -------- Covariates for L_k --------
     if (!use_history) {
         cov_use <- c(covname.baseline, covname.timevarying)
@@ -3765,7 +3785,10 @@ build_h_tau_matrix_cal <- function(
         tol = 1e-12,
         precomp = NULL,
         precomp_only = FALSE,
-        fast_rsf_predict = FALSE
+        fast_rsf_predict = FALSE,
+        support_upper = Inf   # known event-support bound: at theta == 0 the
+                              # candidate set is (tau, support_upper] (see
+                              # .candidate_bounds_at_theta in dynamicCP_AIPCW.R)
 ) {
     # precomp: an optional list of theta-INDEPENDENT objects returned by a prior
     #   call with precomp_only = TRUE. Passing it back avoids recomputing the
@@ -3967,8 +3990,14 @@ build_h_tau_matrix_cal <- function(
     S_u_left_list  <- pc$S_u_left_list
 
     ## ---------------- prediction quantiles q_theta, q_{1-theta} (theta-DEPENDENT) ----------------
-    q_lo_tau <- surv_quantile_vec_from_pred(pred_time, pred_surv_cal, beta = theta)
-    q_hi_tau <- surv_quantile_vec_from_pred(pred_time, pred_surv_cal, beta = 1 - theta)
+    if (is.finite(support_upper) && theta == 0) {
+        # widest candidate member under a known bounded support: (tau, support_upper]
+        q_lo_tau <- rep(tau, nrow(pred_surv_cal))
+        q_hi_tau <- rep(support_upper, nrow(pred_surv_cal))
+    } else {
+        q_lo_tau <- surv_quantile_vec_from_pred(pred_time, pred_surv_cal, beta = theta)
+        q_hi_tau <- surv_quantile_vec_from_pred(pred_time, pred_surv_cal, beta = 1 - theta)
+    }
 
     # expand to output rows by id; non-tau ids remain NA (expected when row_data="all")
     q_lo <- rep(NA_real_, n)

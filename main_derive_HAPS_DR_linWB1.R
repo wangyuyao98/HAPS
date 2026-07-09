@@ -9,6 +9,7 @@ source("src/gen_ICML_simu.R")
 source("src/helpers.R")
 source("src/helpers_AIPCW.R")
 source("src/dynamicCP_AIPCW.R")
+source("src/gtau_eval_helpers.R")   # weighted_coverage_summary for Gtau_mode="tilted"
 
 library(survival)
 library(randomForestSRC)
@@ -31,7 +32,10 @@ alpha <- 0.1
 valid_targets <- c("cox_cox_multiclass_loc0", "rsf_rsf_reg_loc0", "rsf_rsf_reg_loc1")
 args <- commandArgs(trailingOnly = TRUE)
 target_args <- intersect(args, valid_targets)
-numeric_args <- setdiff(args, valid_targets)
+# NOTE: do not use setdiff() here — it deduplicates, so repeated numeric values
+# (e.g. n == n_test, as in "... 4 400 400") would silently collapse and leave
+# later parameters at their defaults.
+numeric_args <- args[!(args %in% valid_targets)]
 bad_numeric_args <- numeric_args[is.na(suppressWarnings(as.integer(numeric_args)))]
 if (length(bad_numeric_args) > 0L) {
     stop(
@@ -148,7 +152,7 @@ make_dr_bounds <- function(base_bounds, fit, which_set = c("test", "cal")) {
 summarize_dr_bounds <- function(bt, bc) {
     len_test <- bt$upper - bt$lower
     len_cal <- bc$upper - bc$lower
-    data.frame(
+    out <- data.frame(
         coverage_cal_ipcw = mean(bc$w_ipcw * bc$covered_X, na.rm = TRUE) / mean(bc$w_ipcw, na.rm = TRUE),
         coverage_test_ipcw = mean(bt$w_ipcw * bt$covered_X, na.rm = TRUE) / mean(bt$w_ipcw, na.rm = TRUE),
         coverage_cal_true = if (all(is.na(bc$covered_T))) NA_real_ else mean(bc$covered_T, na.rm = TRUE),
@@ -159,6 +163,27 @@ summarize_dr_bounds <- function(bt, bc) {
         q50_len_test = as.numeric(stats::quantile(len_test, 0.50, na.rm = TRUE)),
         q75_len_test = as.numeric(stats::quantile(len_test, 0.75, na.rm = TRUE))
     )
+    # At-risk coverage on {T>tau, C_tilde>tau} using the Gtau evaluation carried in
+    # the base file's test bounds: subgroup indicator (at_risk_gtau, from a
+    # tilted+subgroup base run — SAME drawn population, no re-drawing) takes
+    # precedence for coverage_test_gtau, with the weighted value reported alongside;
+    # otherwise the weighted estimator on w_gtau.
+    if ("w_gtau" %in% names(bt)) {
+        surv <- is.finite(bt$w_gtau)
+        wc <- if (any(surv)) {
+            weighted_coverage_summary(bt$covered_T[surv], len_test[surv], bt$w_gtau[surv])$coverage
+        } else NA_real_
+        if ("at_risk_gtau" %in% names(bt)) {
+            in_sub <- which(bt$at_risk_gtau %in% 1L)
+            out$coverage_test_gtau <- if (length(in_sub) > 0L) {
+                mean(bt$covered_T[in_sub], na.rm = TRUE)
+            } else NA_real_
+            out$coverage_test_gtau_wt <- wc
+        } else {
+            out$coverage_test_gtau <- wc
+        }
+    }
+    out
 }
 
 derive_one_target <- function(target) {
@@ -173,7 +198,16 @@ derive_one_target <- function(target) {
     R <- cfg$R
     tau_grid <- cfg$tau_grid
     dgm_name <- cfg$dgm_name %||% "linear_weibull"
-    no_censoring_test <- identical(cfg$Gtau_mode, "one")
+    # Test-data handling must mirror the base driver's Gtau evaluation setup:
+    # censored test data ONLY for the legacy estimated+subgroup configuration;
+    # everything else ("one", tilted, estimated+weighted) uses uncensored test
+    # data, with at-risk coverage taken from the w_gtau / at_risk_gtau columns
+    # carried in the base file's bounds. Legacy base files (no gtau_eval_method
+    # in config) were "subgroup" for estimated.
+    gtau_mode_cfg <- cfg$Gtau_mode %||% "one"
+    eval_method_cfg <- cfg$gtau_eval_method %||%
+        (if (identical(gtau_mode_cfg, "estimated")) "subgroup" else "weighted")
+    no_censoring_test <- !(gtau_mode_cfg == "estimated" && eval_method_cfg == "subgroup")
 
     results_summary <- vector("list", R)
     results_bounds <- vector("list", R)
@@ -226,6 +260,12 @@ derive_one_target <- function(target) {
             q50_len_test = NA_real_,
             q75_len_test = NA_real_
         )
+        needs_gtau_cols <- gtau_mode_cfg == "tilted" ||
+            (gtau_mode_cfg == "estimated" && eval_method_cfg == "weighted")
+        if (needs_gtau_cols) tab_r$coverage_test_gtau <- NA_real_
+        if (gtau_mode_cfg == "tilted" && eval_method_cfg == "subgroup") {
+            tab_r$coverage_test_gtau_wt <- NA_real_
+        }
         bounds_r <- vector("list", length(tau_grid))
         names(bounds_r) <- paste0("tau_", tau_grid)
         survC_r <- vector("list", length(tau_grid))
@@ -266,8 +306,12 @@ derive_one_target <- function(target) {
                     censoring_method = cfg$censoring_method_AIPCW %||% "piecewise",
                     G_use_history = cfg$G_use_history %||% FALSE,
                     G_history_mode = cfg$G_history_mode %||% "wide",
-                    Gtau_mode = cfg$Gtau_mode,
-                    Gtau_delta = cfg$Gtau_delta,
+                    # This ipcw_only call is used ONLY to reconstruct the raw model
+                    # quantiles (alpha/2, 1-alpha/2), which do not depend on Gtau;
+                    # the Gtau-dependent intervals/weights come from the base file's
+                    # bounds. ipcw_only also supports only Gtau_mode="one", so pin it.
+                    Gtau_mode = "one",
+                    Gtau_delta = 0,
                     ipcw_only = TRUE
                 )
             }, error = function(e) {

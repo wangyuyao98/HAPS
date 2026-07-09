@@ -9,6 +9,19 @@ approximate and refer to the `code-improvements` branch.
 These items were reviewed and **left as-is on purpose** (the code is what produced
 the reported results); nothing here is a pending code change.
 
+## Repository history
+
+- `v1.0-original` (tag, commit `e8eeef0`) — the original code as of the
+  arXiv:2605.06581v1 submission. Use this for exact reproduction of the paper.
+- `v1.1-code-improvements` (tag, commit `1dee016`) — after the code review +
+  speedup pass: robustness fixes and result-preserving speedups; the full
+  default-path smoke suite verified bit-identical to `v1.0-original`. Full diff:
+  https://github.com/wangyuyao98/HAPS/compare/v1.0-original...v1.1-code-improvements
+- General-G_tau development (completed `Gtau_mode = "estimated"`/`"tilted"`,
+  weighted at-risk evaluation, censoring-shift sensitivity study, `linWB2` DGM,
+  `support_upper` candidate bound) — branch `gtau-modes`, reviewed and merged via
+  GitHub pull request (see the repository's pull-request history).
+
 ## 1. Deviations from the paper's stated algorithm (in the shipped pipeline)
 
 These are deliberate implementation choices that differ from the paper text and
@@ -114,7 +127,38 @@ published `.rds` files.
   `HAPS_FAST_RSF_PREDICT=TRUE Rscript main_simu_dynamic_DDH_tuning.R ...`) for new
   experiments where exact bitwise reproduction is not required.
 
-## 5. DDH prediction-model caveats
+## 5. Gtau evaluation options (`gtau_eval_method`, default `"weighted"`)
+
+For `Gtau_mode = "estimated"` / `"tilted"`, the simulation drivers evaluate coverage on
+the at-risk population {T>τ, C̃>τ} (C̃ ⊥ T | covariate path; C̃ ~ the true censoring law,
+tilted by exp(δt) under `"tilted"`). Because C̃ enters only through 1(C̃>τ), conditioning on
+the subgroup is equivalent to weighting uncensored survivors by w = G̃_δ(τ|path) — the
+weighted estimator is the Rao–Blackwellization of physically constructing the subgroup.
+
+`gtau_eval_method` in `main_simu_dynamic_linWB1_cox_multiclass_loc0.R` (persisted in the
+result config and honored by `main_derive_HAPS_DR_linWB1.R`):
+
+- `"weighted"` (default): oracle-weighted coverage on uncensored T>τ survivors →
+  `coverage_test_gtau` (δ=0 weights for `"estimated"`). Chosen as default for consistency
+  across the two modes and lowest variance — in the evaluator comparison
+  (`validation/compare_gtau_evaluators.R`; M=300 test sets of n=500) all strategies were
+  unbiased with SDs: weighted 0.0153 < physical-C̃-sampled 0.0159 < ratio-from-subgroup
+  0.0170 (tilted target), and weighted 0.0155 < subgroup 0.0162 (estimated target).
+- `"subgroup"`: physical at-risk construction.
+  * estimated: legacy behavior — censored test data, subgroup X>τ, coverage in
+    `coverage_test_true` (pre-existing outputs reproduce exactly).
+  * tilted: membership indicators I(C̃>τ) ~ Bernoulli(w) (the indicator's exact law) drawn
+    on an isolated deterministic RNG stream (calibration outputs bit-identical to a
+    weighted run); subgroup mean → `coverage_test_gtau`, weighted counterpart →
+    `coverage_test_gtau_wt`; bounds carry `at_risk_gtau` alongside `w_gtau`.
+
+The identity behind the weighted evaluator is validated end-to-end (full C̃ trajectories
+drawn from the tilted true law by inverse-CDF, never using the weights) in
+`validation/validate_gtau_weighted_evaluation.R`. True-law weights are implemented for the
+linWB1 DGM only (`src/gtau_eval_helpers.R`); other DGMs currently require
+estimated+subgroup.
+
+## 6. DDH prediction-model caveats
 
 - CPU threads: `src/ddh_backend.py` now pins `torch.set_num_threads` (default 1,
   override via `args["torch_num_threads"]`) for cross-run/cross-machine

@@ -1,0 +1,64 @@
+## Registry of linear-Weibull ("linWB") DGM presets.
+##
+## linWB1 -- the original paper DGM1 (UNCHANGED; kept for comparability with the
+##   published results and the existing sensitivity runs under results/linWB1/).
+##   Note: under this DGM the censoring positivity assumption holds only up to
+##   trimming -- G(T|path) < 0.05 for ~4-6% of subjects (see
+##   docs/dgm_positivity_notes.md) -- which is absorbed by trim.C = 0.05.
+##
+## linWB2 -- positivity-respecting variant for the general-Gtau paper:
+##   * event-time law IDENTICAL to linWB1, but generated from its conditional
+##     law given T <= T_max = 20 (truncated inverse-CDF; no atom; removes 0.31%
+##     tail mass), so the support is bounded and known;
+##   * censoring retuned (last-interval shape 3 -> 2; beta_C0 = (-5,-5,-5.8);
+##     beta_CL = 0.3) so that G(T_max | path) >= ~0.10 across essentially the
+##     entire covariate-path distribution (empirical 0.01%-quantile 0.104 over
+##     100k paths) with censoring rate ~31%;
+##   * the widest candidate prediction set can then be taken as (tau, T_max]
+##     -- a KNOWN constant, so the candidate family is fully fixed given the
+##     training data and Algorithm 1 is feasible by construction.
+get_linWB_dgm_par <- function(setup = c("linWB1", "linWB2")) {
+    setup <- match.arg(setup)
+    switch(
+        setup,
+        linWB1 = list(
+            par = list(
+                shape_T = c(4, 4, 5),
+                shape_C = c(3, 3, 3),
+                beta_T0 = c(-8, -8, -5),
+                beta_TL = c(1, 2, 3),
+                beta_C0 = c(-6, -6, -5),
+                beta_CL = c(2, 2, 2)
+            ),
+            T_max = Inf,
+            change_times = c(3, 6),
+            rho = 0.3,
+            # tilt grid for the sensitivity study; spans ~(-25,+12)pp at-risk
+            # shift at tau=3 and ~(-34,+18)pp at tau=6 under this censoring law
+            delta_grid = c(-0.30, -0.15, 0, 0.15, 0.30),
+            description = "Paper DGM1 (unchanged); positivity via trim.C only."
+        ),
+        linWB2 = list(
+            par = list(
+                shape_T = c(4, 4, 5),
+                shape_C = c(3, 3, 2),
+                beta_T0 = c(-8, -8, -5),
+                beta_TL = c(1, 2, 3),
+                beta_C0 = c(-5, -5, -5.8),
+                beta_CL = c(0.3, 0.3, 0.3)
+            ),
+            T_max = 20,
+            change_times = c(3, 6),
+            rho = 0.3,
+            # recalibrated: linWB2's flatter late censoring makes exp(delta*t)
+            # tilts far more responsive (linWB1's +-0.30 would collapse the
+            # at-risk fraction to 0.06 at tau=6). This grid spans
+            # ~(-20,+13)pp at tau=3 and ~(-31,+23)pp at tau=6.
+            delta_grid = c(-0.08, -0.04, 0, 0.04, 0.08),
+            description = paste0(
+                "Positivity-respecting variant: same event law truncated at T_max=20; ",
+                "censoring retuned so G(T_max|path) >= ~0.10 (eta) with ~31% censoring; ",
+                "widest candidate set (tau, T_max].")
+        )
+    )
+}

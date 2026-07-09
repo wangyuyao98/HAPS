@@ -4,11 +4,23 @@ simulate_dataset_long_linear_weibull <- function(
         tau_max = Inf,               # admin cap for observed data
         no_censoring = FALSE,
         par,                         # parameters in the DGM
-        
+
         # ---- L process: stationary AR(1); iid when rho = 0 ----
         rho = 0,                     # Corr(L_k, L_{k-1})
         L_mean = 0,
-        L_sd = 1
+        L_sd = 1,
+        return_L_full = FALSE,       # opt-in: attach the full n x K covariate path
+                                     # matrix as attr(., "L_full"). Default off keeps
+                                     # the returned object byte-identical to before;
+                                     # used only by the Gtau tilted-evaluation helpers
+                                     # (the full path is needed for the tilt normalizer).
+        T_max = Inf                  # opt-in bounded event-time support: when finite,
+                                     # the event time is drawn from its conditional law
+                                     # given T <= T_max (TRUNCATED generation via
+                                     # inverse-CDF in the last interval -- no atom at
+                                     # T_max, so T stays absolutely continuous and every
+                                     # draw satisfies T < T_max strictly). Default Inf
+                                     # keeps the generator byte-identical to before.
 ) {
     if (!is.null(seed)) set.seed(seed)
     
@@ -33,6 +45,13 @@ simulate_dataset_long_linear_weibull <- function(
     stopifnot(length(shape_T) == K, length(shape_C) == K,
               length(beta_T0) == K, length(beta_TL) == K,
               length(beta_C0) == K, length(beta_CL) == K)
+
+    stopifnot(is.infinite(T_max) || T_max > max(change_times))
+    # Truncation binds only in the last (infinite) interval: T <= T_max is
+    # equivalent to (last-interval waiting time) <= T_max - t_K for subjects
+    # reaching it; earlier intervals have finite widths below T_max.
+    trunc_last_T <- is.finite(T_max)
+    w_last_cap <- if (trunc_last_T) T_max - change_times_ext[K] else Inf
     
     # ---- Stationary AR(1) generator for L path ----
     # z_k ~ AR(1) with Var(z_k)=1; L_k = L_mean + L_sd * z_k
@@ -56,16 +75,18 @@ simulate_dataset_long_linear_weibull <- function(
     out_list <- vector("list", n)
     TT <- CC <- X <- rep(NA_real_, n)
     Delta <- rep(NA_integer_, n)
-    
+    L_full <- if (isTRUE(return_L_full)) matrix(NA_real_, nrow = n, ncol = K) else NULL
+
     for (i in seq_len(n)) {
-        
+
         # ---- Step 1: simulate latent TT and C ----
         TT_i <- 0
         CC_i <- 0
         T_done <- FALSE
         C_done <- FALSE
-        
+
         L_path <- gen_L_path(K)
+        if (isTRUE(return_L_full)) L_full[i, ] <- L_path
         
         for (k in seq_len(K)) {
             Lk <- L_path[k]
@@ -74,7 +95,14 @@ simulate_dataset_long_linear_weibull <- function(
             # Event time
             linpred_T <- beta_T0[k] + beta_TL[k] * Lk
             scale_T   <- exp(-linpred_T / shape_T[k])
-            T_raw     <- rweibull(1, shape = shape_T[k], scale = scale_T)
+            if (trunc_last_T && k == K && !T_done) {
+                # truncated Weibull via inverse-CDF: W | W <= w_last_cap
+                # (keeps T absolutely continuous; T < T_max strictly a.s.)
+                p_cap <- pweibull(w_last_cap, shape = shape_T[k], scale = scale_T)
+                T_raw <- qweibull(runif(1) * p_cap, shape = shape_T[k], scale = scale_T)
+            } else {
+                T_raw <- rweibull(1, shape = shape_T[k], scale = scale_T)
+            }
             
             # Censoring time
             linpred_C <- beta_C0[k] + beta_CL[k] * Lk
@@ -164,7 +192,12 @@ simulate_dataset_long_linear_weibull <- function(
     attr(dat_long, "L_process") <- "stationary AR(1); iid when rho = 0"
     attr(dat_long, "rho") <- rho
     attr(dat_long, "dgm_name") <- "linear_weibull"
-    
+    attr(dat_long, "T_max") <- T_max
+    if (isTRUE(return_L_full)) {
+        rownames(L_full) <- as.character(seq_len(n))
+        attr(dat_long, "L_full") <- L_full
+    }
+
     dat_long
 }
 
@@ -369,10 +402,20 @@ simulate_dataset_long <- function(
         rho = 0,                     # Corr(L_k, L_{k-1})
         L_mean = 0,
         L_sd = 1,
-        dgm_name = c("linear_weibull", "mixC_uniform_cox")
+        dgm_name = c("linear_weibull", "mixC_uniform_cox"),
+        return_L_full = FALSE,
+        T_max = Inf
 ) {
     dgm_name <- match.arg(dgm_name)
-    
+    if (isTRUE(return_L_full) && dgm_name != "linear_weibull") {
+        stop("simulate_dataset_long(): return_L_full=TRUE is only supported for ",
+             "dgm_name='linear_weibull'.")
+    }
+    if (is.finite(T_max) && dgm_name != "linear_weibull") {
+        stop("simulate_dataset_long(): finite T_max is only supported for ",
+             "dgm_name='linear_weibull'.")
+    }
+
     switch(
         dgm_name,
         linear_weibull = simulate_dataset_long_linear_weibull(
@@ -384,7 +427,9 @@ simulate_dataset_long <- function(
             par = par,
             rho = rho,
             L_mean = L_mean,
-            L_sd = L_sd
+            L_sd = L_sd,
+            return_L_full = return_L_full,
+            T_max = T_max
         ),
         mixC_uniform_cox = .simulate_dataset_long_mixC_uniform_cox(
             n = n,
