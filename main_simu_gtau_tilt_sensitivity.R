@@ -240,3 +240,13 @@ for (tt in tau_grid) {
         paste(sprintf("%.3f", md[as.character(delta_grid)]), collapse = " "),
         paste(sprintf("%.3f", oa[as.character(delta_grid)]), collapse = " ")))
 }
+
+## Infeasibility rate: share of calibrations per (tau, arm) where Algorithm 1
+## had no feasible theta (ok = FALSE; these reps are EXCLUDED from the means
+## above, which makes affected cells slightly optimistic — report alongside).
+cal_rows <- res[abs(res$delta_eval) < 1e-9, ]          # one row per calibration
+arm_lab <- ifelse(cal_rows$method == "tilted",
+                  sprintf("tilted(dc=%+.2f)", cal_rows$delta_cal), cal_rows$method)
+infeas <- tapply(!cal_rows$ok, list(cal_rows$tau, arm_lab), mean)
+cat("\nInfeasible-calibration rate by tau x arm (excluded from coverage means):\n")
+print(round(infeas, 4))

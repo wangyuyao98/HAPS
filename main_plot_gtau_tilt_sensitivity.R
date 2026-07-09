@@ -26,9 +26,20 @@ infile  <- file.path(folder, sprintf("gtau_tilt_sensitivity_R%d_n%d_ntest%d_alph
                                      R, n, n_test, format(alpha)))
 if (!file.exists(infile)) stop("Missing results file: ", infile)
 obj <- readRDS(infile)
-res <- obj$results[obj$results$ok, ]
+res_all <- obj$results
+res <- res_all[res_all$ok, ]
 delta_grid <- obj$config$delta_grid
 tau_grid   <- obj$config$tau_grid
+
+## Infeasibility rate per (tau, arm): calibrations with no feasible theta are
+## excluded from the coverage/length means, so report the exclusion rate
+## alongside the figures (CSV + plot caption).
+cal_rows <- res_all[abs(res_all$delta_eval) < 1e-9, ]
+cal_rows$arm_lab <- ifelse(cal_rows$method == "tilted",
+                           sprintf("tilted(dc=%+.2f)", cal_rows$delta_cal), cal_rows$method)
+infeas <- aggregate(list(infeasible_rate = !cal_rows$ok),
+                    by = list(tau = cal_rows$tau, arm = cal_rows$arm_lab), FUN = mean)
+max_infeas <- max(infeas$infeasible_rate)
 
 # Build an arm label per row.
 res$arm <- with(res, ifelse(
@@ -59,7 +70,10 @@ p_cov <- ggplot(agg, aes(delta_eval, coverage, colour = arm, shape = arm)) +
     labs(x = expression(delta[eval]~"(evaluation censoring tilt)"),
          y = "Mean survivor-conditional coverage",
          colour = "Calibration arm", shape = "Calibration arm",
-         title = sprintf("Censoring-shift sensitivity (linWB1, R=%d, n=%d)", R, n)) +
+         title = sprintf("Censoring-shift sensitivity (linWB1, R=%d, n=%d)", R, n),
+         caption = sprintf(
+             "Infeasible calibrations (no feasible theta) excluded from means; max rate %.1f%% (see %s).",
+             100 * max_infeas, "gtau_tilt_infeasibility_*.csv")) +
     theme_bw() + theme(legend.position = "bottom")
 
 p_len <- ggplot(agg, aes(delta_eval, med_len, colour = arm, shape = arm)) +
@@ -71,6 +85,8 @@ p_len <- ggplot(agg, aes(delta_eval, med_len, colour = arm, shape = arm)) +
 
 f_cov <- file.path(folder, "plots", sprintf("gtau_tilt_coverage_R%d_n%d.pdf", R, n))
 f_len <- file.path(folder, "plots", sprintf("gtau_tilt_length_R%d_n%d.pdf", R, n))
+f_inf <- file.path(folder, "plots", sprintf("gtau_tilt_infeasibility_R%d_n%d.csv", R, n))
 ggsave(f_cov, p_cov, width = 10, height = 4)
 ggsave(f_len, p_len, width = 10, height = 4)
-cat("Saved:\n ", f_cov, "\n ", f_len, "\n")
+write.csv(infeas[order(infeas$tau, infeas$arm), ], f_inf, row.names = FALSE)
+cat("Saved:\n ", f_cov, "\n ", f_len, "\n ", f_inf, "\n")
