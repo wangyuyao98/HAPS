@@ -1,0 +1,48 @@
+Gtau tilt sensitivity | R=200 n=1000 n_test=3000 | tau={0,3,6} | delta={-0.3,-0.15,0,0.15,0.3}
+rep 1 of 200 
+rep 10 of 200 
+  [checkpoint saved through rep 10]
+rep 20 of 200 
+  [checkpoint saved through rep 20]
+rep 30 of 200 
+  [checkpoint saved through rep 30]
+rep 40 of 200 
+  [checkpoint saved through rep 40]
+rep 50 of 200 
+  [checkpoint saved through rep 50]
+rep 60 of 200 
+  [checkpoint saved through rep 60]
+rep 70 of 200 
+  [checkpoint saved through rep 70]
+rep 80 of 200 
+  [checkpoint saved through rep 80]
+rep 90 of 200 
+  [checkpoint saved through rep 90]
+rep 100 of 200 
+  [checkpoint saved through rep 100]
+rep 110 of 200 
+  [checkpoint saved through rep 110]
+rep 120 of 200 
+  [checkpoint saved through rep 120]
+rep 130 of 200 
+  [checkpoint saved through rep 130]
+rep 140 of 200 
+  [checkpoint saved through rep 140]
+rep 150 of 200 
+  [checkpoint saved through rep 150]
+rep 160 of 200 
+  [checkpoint saved through rep 160]
+rep 170 of 200 
+  [checkpoint saved through rep 170]
+rep 180 of 200 
+  [checkpoint saved through rep 180]
+rep 190 of 200 
+  [checkpoint saved through rep 190]
+rep 200 of 200 
+done in 427.6 min
+Saved: results/linWB1/gtau_tilt/gtau_tilt_sensitivity_R200_n1000_ntest3000_alpha0.1.rds 
+
+Mean coverage by delta_eval={-0.3,-0.15,0,0.15,0.3} (nominal 0.9):
+ tau=0  matched-tilt: 0.906 0.906 0.906 0.906 0.906 | 'one': 0.906 0.906 0.906 0.906 0.906
+ tau=3  matched-tilt: 0.911 0.910 0.909 0.902 0.901 | 'one': 0.914 0.916 0.912 0.910 0.909
+ tau=6  matched-tilt: 0.895 0.895 0.908 0.892 0.893 | 'one': 0.913 0.911 0.907 0.907 0.907

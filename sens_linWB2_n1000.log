@@ -1,0 +1,59 @@
+Gtau tilt sensitivity | setup=linWB2 | R=200 n=1000 n_test=3000 | tau={0,3,6} | delta={-0.08,-0.04,0,0.04,0.08}
+rep 1 of 200 
+rep 10 of 200 
+  [checkpoint saved through rep 10]
+rep 20 of 200 
+  [checkpoint saved through rep 20]
+rep 30 of 200 
+  [checkpoint saved through rep 30]
+rep 40 of 200 
+  [checkpoint saved through rep 40]
+rep 50 of 200 
+  [checkpoint saved through rep 50]
+rep 60 of 200 
+  [checkpoint saved through rep 60]
+rep 70 of 200 
+  [checkpoint saved through rep 70]
+rep 80 of 200 
+  [checkpoint saved through rep 80]
+rep 90 of 200 
+  [checkpoint saved through rep 90]
+rep 100 of 200 
+  [checkpoint saved through rep 100]
+rep 110 of 200 
+  [checkpoint saved through rep 110]
+rep 120 of 200 
+  [checkpoint saved through rep 120]
+rep 130 of 200 
+  [checkpoint saved through rep 130]
+rep 140 of 200 
+  [checkpoint saved through rep 140]
+rep 150 of 200 
+  [checkpoint saved through rep 150]
+rep 160 of 200 
+  [checkpoint saved through rep 160]
+rep 170 of 200 
+  [checkpoint saved through rep 170]
+rep 180 of 200 
+  [checkpoint saved through rep 180]
+rep 190 of 200 
+  [checkpoint saved through rep 190]
+rep 200 of 200 
+There were 50 or more warnings (use warnings() to see the first 50)
+done in 336.6 min
+Saved: results/linWB2/gtau_tilt/gtau_tilt_sensitivity_R200_n1000_ntest3000_alpha0.1.rds 
+
+Mean coverage by delta_eval={-0.08,-0.04,0,0.04,0.08} (nominal 0.9):
+ tau=0  matched-tilt: 0.909 0.909 0.909 0.909 0.909 | 'one': 0.909 0.909 0.909 0.909 0.909
+ tau=3  matched-tilt: 0.899 0.899 0.909 0.899 0.899 | 'one': 0.912 0.912 0.911 0.910 0.909
+ tau=6  matched-tilt: 0.932 0.932 0.909 0.935 0.935 | 'one': 0.910 0.909 0.908 0.908 0.909
+
+Infeasible-calibration rate by tau x arm (excluded from coverage means):
+  estimated one tilted(dc=-0.04) tilted(dc=-0.08) tilted(dc=+0.04)
+0         0   0                0                0                0
+3         0   0                0                0                0
+6         0   0                0                0                0
+  tilted(dc=+0.08)
+0                0
+3                0
+6                0
