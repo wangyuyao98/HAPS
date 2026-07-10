@@ -22,7 +22,9 @@ SAMPLE_SIZES="${SAMPLE_SIZES:-300,500,1000}"
 N_TEST="${N_TEST:-3000}"
 TOTAL_R="${TOTAL_R:-200}"
 SHARD_MAP="${SHARD_MAP:-300:25,500:20,1000:10}"
-MEMORY_MAP="${MEMORY_MAP:-300:2GB,500:2GB,1000:3GB}"
+# Probe-informed (gtau_probe, 2026-07-09): observed peaks 349-544 MB across
+# all six cells; disk flat at ~565 MB.
+MEMORY_MAP="${MEMORY_MAP:-300:1GB,500:1GB,1000:1536MB}"
 DISK_MAP="${DISK_MAP:-all:2GB}"
 
 ${RSCRIPT} "${SCRIPT_DIR}/prepare_gtau_jobs.R" \
