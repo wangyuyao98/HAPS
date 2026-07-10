@@ -23,6 +23,24 @@ to match `request_cpus = 1`.
 | `submit.sub` | one Condor job per `queue.txt` line, container-only R, `max_retries = 2` |
 | `collect_gtau_results.R` | merge shards; for complete cells rebuild the CANONICAL result rds (identical schema to the local driver's) |
 
+## No system R on the access point
+
+OSPool access points do not ship R — R lives inside the container, which sits
+in your data area as a plain file. Run every R step on the AP through it:
+
+```
+apptainer exec /ospool/ap41/data/yuyao.wang/dCP1.sif Rscript <script> <args>
+```
+
+The prepare wrappers accept this via the `RSCRIPT` environment variable:
+
+```
+RSCRIPT="apptainer exec /ospool/ap41/data/yuyao.wang/dCP1.sif Rscript" bash osg/prepare_probe.sh
+```
+
+(If `apptainer` is not found, try `singularity` — same arguments.) Worker jobs
+are unaffected: they always run inside the container via `+SingularityImage`.
+
 ## Workflow (on the OSG access point, from the repo root)
 
 1. Get the latest code:
@@ -54,10 +72,11 @@ cd osg
 condor_submit experiment_name=gtau_grid submit.sub
 ```
 
-4. Collect (tolerates missing shards; reports them):
+4. Collect (tolerates missing shards; reports them; on the AP use the
+   container prefix):
 
 ```
-Rscript osg/collect_gtau_results.R --experiment-name gtau_grid
+apptainer exec /ospool/ap41/data/yuyao.wang/dCP1.sif Rscript osg/collect_gtau_results.R --experiment-name gtau_grid
 ```
 
    Complete cells produce canonical files under

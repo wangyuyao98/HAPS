@@ -8,10 +8,14 @@
 #
 # Override any of these via environment variables, e.g.:
 #   MEMORY_MAP=all:6GB bash osg/prepare_probe.sh
+#
+# OSG access points have no system R; run the R step through the container:
+#   RSCRIPT="apptainer exec /ospool/ap41/data/yuyao.wang/dCP1.sif Rscript" bash osg/prepare_probe.sh
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+RSCRIPT="${RSCRIPT:-Rscript}"
 
 EXPERIMENT_NAME="${EXPERIMENT_NAME:-gtau_probe}"
 SETUPS="${SETUPS:-linWB1,linWB2}"
@@ -22,7 +26,7 @@ REP_SUBSET="${REP_SUBSET:-1}"
 MEMORY_MAP="${MEMORY_MAP:-all:4GB}"
 DISK_MAP="${DISK_MAP:-all:2GB}"
 
-Rscript "${SCRIPT_DIR}/prepare_gtau_jobs.R" \
+${RSCRIPT} "${SCRIPT_DIR}/prepare_gtau_jobs.R" \
   --experiment-name "${EXPERIMENT_NAME}" \
   --setups "${SETUPS}" \
   --sample-sizes "${SAMPLE_SIZES}" \

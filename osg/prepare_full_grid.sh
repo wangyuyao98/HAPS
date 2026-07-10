@@ -7,10 +7,14 @@
 #
 # Override any of these via environment variables, e.g.:
 #   MEMORY_MAP=300:2GB,500:2GB,1000:4GB bash osg/prepare_full_grid.sh
+#
+# OSG access points have no system R; run the R step through the container:
+#   RSCRIPT="apptainer exec /ospool/ap41/data/yuyao.wang/dCP1.sif Rscript" bash osg/prepare_full_grid.sh
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+RSCRIPT="${RSCRIPT:-Rscript}"
 
 EXPERIMENT_NAME="${EXPERIMENT_NAME:-gtau_grid}"
 SETUPS="${SETUPS:-linWB1,linWB2}"
@@ -21,7 +25,7 @@ SHARD_MAP="${SHARD_MAP:-300:25,500:20,1000:10}"
 MEMORY_MAP="${MEMORY_MAP:-300:2GB,500:2GB,1000:3GB}"
 DISK_MAP="${DISK_MAP:-all:2GB}"
 
-Rscript "${SCRIPT_DIR}/prepare_gtau_jobs.R" \
+${RSCRIPT} "${SCRIPT_DIR}/prepare_gtau_jobs.R" \
   --experiment-name "${EXPERIMENT_NAME}" \
   --setups "${SETUPS}" \
   --sample-sizes "${SAMPLE_SIZES}" \
