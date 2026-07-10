@@ -50,6 +50,9 @@ for (col in c("n", "n_test", "total_R", "rep_start", "rep_end", "rep_count")) {
     manifest[[col]] <- as.integer(manifest[[col]])
 }
 manifest$alpha <- as.numeric(manifest$alpha)
+## manifests written before the model-case feature have no models column and
+## are the default all-cox case
+if (!"models" %in% names(manifest)) manifest$models <- "cox"
 manifest$raw_path <- file.path(raw_root, manifest$result_relpath)
 manifest$found <- file.exists(manifest$raw_path)
 
@@ -60,18 +63,20 @@ if (any(!manifest$found)) {
 }
 
 ## ------------------------- Per-cell collection ------------------------
-cells <- unique(manifest[, c("setup", "n", "n_test", "alpha", "total_R")])
+cells <- unique(manifest[, c("setup", "models", "n", "n_test", "alpha", "total_R")])
 collected_files <- character(0)
 cell_status <- list()
 for (ci in seq_len(nrow(cells))) {
     cell <- cells[ci, ]
-    sub <- manifest[manifest$setup == cell$setup & manifest$n == cell$n &
+    sub <- manifest[manifest$setup == cell$setup & manifest$models == cell$models &
+                    manifest$n == cell$n &
                     manifest$n_test == cell$n_test & manifest$total_R == cell$total_R, ]
     sub <- sub[order(sub$rep_start), ]
     covered <- sort(unlist(mapply(seq, sub$rep_start[sub$found], sub$rep_end[sub$found],
                                   SIMPLIFY = FALSE)))
     complete <- all(sub$found) && identical(as.integer(covered), seq_len(cell$total_R))
-    label <- sprintf("%s/n%d", cell$setup, cell$n)
+    label <- if (identical(cell$models, "cox")) sprintf("%s/n%d", cell$setup, cell$n)
+             else sprintf("%s/%s/n%d", cell$setup, cell$models, cell$n)
     cell_status[[label]] <- list(cell = cell, jobs = nrow(sub), found = sum(sub$found),
                                  complete = complete,
                                  missing_job_ids = sub$job_id[!sub$found])
@@ -106,7 +111,8 @@ for (ci in seq_len(nrow(cells))) {
         worker_meta[[j]] <- c(r = shard$meta$r_version, shard$meta$pkg_versions)
     }
 
-    cfg <- gtau_study_cfg(cell$setup, cell$n, cell$n_test, cell$alpha)
+    cfg <- gtau_study_cfg(cell$setup, cell$n, cell$n_test, cell$alpha,
+                          models = cell$models)
     obj <- build_gtau_result_object(
         rows_all, cfg, cell$total_R, seeds, seeds_test, seeds_split,
         elapsed_sec = elapsed_total, completed_reps = cell$total_R,
@@ -116,7 +122,8 @@ for (ci in seq_len(nrow(cells))) {
                           worker_versions = unique(worker_meta)))
     outfile <- file.path(root_dir, gtau_sensitivity_filename(
         cell$setup, cell$total_R, cell$n, cell$n_test, cell$alpha,
-        results_root = file.path("results", "osg", exp, "collected")))
+        results_root = file.path("results", "osg", exp, "collected"),
+        models = cell$models))
     dir.create(dirname(outfile), recursive = TRUE, showWarnings = FALSE)
     saveRDS(obj, outfile)
     collected_files <- c(collected_files, outfile)

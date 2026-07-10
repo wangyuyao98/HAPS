@@ -8,10 +8,11 @@ rm(list = ls())
 ##   - "estimated"           (tilt family, delta_cal = 0)
 ##   - "matched" tilt        (delta_cal == delta_eval; the ideal oracle target)
 ##   - fixed-delta_cal tilts (mismatch robustness), one curve per delta_cal.
-## Usage: Rscript main_plot_gtau_tilt_sensitivity.R <R> <n> <n_test> [alpha] [setup] [results_root]
+## Usage: Rscript main_plot_gtau_tilt_sensitivity.R <R> <n> <n_test> [alpha] [setup] [results_root] [models]
 ## setup in {linWB1 (default), linWB2} selects <results_root>/<setup>/gtau_tilt/.
 ## results_root defaults to "results"; pass e.g. results/osg/gtau_grid/collected
-## to plot OSG-collected files without moving them.
+## to plot OSG-collected files without moving them. models (default "cox") is
+## the model-case tag: non-default cases read/write "_<models>"-tagged files.
 
 if (!file.exists("src/gen_ICML_simu.R")) {
     stop("Please run main_plot_gtau_tilt_sensitivity.R from the repository root directory.")
@@ -26,10 +27,12 @@ alpha  <- if (length(args) >= 4L) as.numeric(args[[4L]]) else 0.1
 setup  <- if (length(args) >= 5L && nzchar(args[[5L]])) args[[5L]] else "linWB1"
 if (!setup %in% c("linWB1", "linWB2")) stop("setup must be 'linWB1' or 'linWB2'.")
 results_root <- if (length(args) >= 6L && nzchar(args[[6L]])) args[[6L]] else "results"
+models <- if (length(args) >= 7L && nzchar(args[[7L]])) args[[7L]] else "cox"
+mtag   <- if (identical(models, "cox")) "" else paste0("_", models)
 
 folder  <- file.path(results_root, setup, "gtau_tilt")
-infile  <- file.path(folder, sprintf("gtau_tilt_sensitivity_R%d_n%d_ntest%d_alpha%s.rds",
-                                     R, n, n_test, format(alpha)))
+infile  <- file.path(folder, sprintf("gtau_tilt_sensitivity_R%d_n%d_ntest%d_alpha%s%s.rds",
+                                     R, n, n_test, format(alpha), mtag))
 if (!file.exists(infile)) stop("Missing results file: ", infile)
 obj <- readRDS(infile)
 res_all <- obj$results
@@ -89,9 +92,9 @@ p_len <- ggplot(agg, aes(delta_eval, med_len, colour = arm, shape = arm)) +
          colour = "Calibration arm", shape = "Calibration arm") +
     theme_bw() + theme(legend.position = "bottom")
 
-f_cov <- file.path(folder, "plots", sprintf("gtau_tilt_coverage_R%d_n%d.pdf", R, n))
-f_len <- file.path(folder, "plots", sprintf("gtau_tilt_length_R%d_n%d.pdf", R, n))
-f_inf <- file.path(folder, "plots", sprintf("gtau_tilt_infeasibility_R%d_n%d.csv", R, n))
+f_cov <- file.path(folder, "plots", sprintf("gtau_tilt_coverage_R%d_n%d%s.pdf", R, n, mtag))
+f_len <- file.path(folder, "plots", sprintf("gtau_tilt_length_R%d_n%d%s.pdf", R, n, mtag))
+f_inf <- file.path(folder, "plots", sprintf("gtau_tilt_infeasibility_R%d_n%d%s.csv", R, n, mtag))
 ggsave(f_cov, p_cov, width = 10, height = 4)
 ggsave(f_len, p_len, width = 10, height = 4)
 write.csv(infeas[order(infeas$tau, infeas$arm), ], f_inf, row.names = FALSE)

@@ -13,11 +13,37 @@
 ##   src/linWB_dgm_registry.R
 ## =====================================================================
 
+## Registry of model configurations ("cases") for the study. "cox" is the
+## default and reproduces every existing result file byte-for-byte. Non-default
+## cases are encoded into the output FILENAME and the OSG result paths so runs
+## under different models can never overwrite each other. Add new cases here
+## (one place serves the local driver, the OSG prepare/worker, and the plots);
+## run an OSG probe for each new case before production — ML nuisances change
+## the memory/runtime profile.
+gtau_model_cases <- function() {
+    list(
+        cox = list(
+            model.pred = "cox", model.C = "cox", model.S = "cox", model.Xi = "xgb_reg",
+            needs_rsf = FALSE,
+            description = "Correctly-specified Cox pred/G/S + xgb_reg Xi (default; all completed runs)."),
+        rsfG_xgbS = list(
+            model.pred = "cox", model.C = "rsf", model.S = "xgb_cox", model.Xi = "xgb_reg",
+            needs_rsf = TRUE,
+            description = "ML nuisances: RSF censoring model, XGB-Cox S_k, xgb_reg Xi; Cox prediction.")
+    )
+}
+
 ## Single source of truth for every study constant. Both the local driver
 ## and the OSG worker build their configuration through this function; any
 ## change here changes both.
-gtau_study_cfg <- function(setup, n, n_test, alpha = 0.1) {
+gtau_study_cfg <- function(setup, n, n_test, alpha = 0.1, models = "cox") {
     dgm <- get_linWB_dgm_par(setup)    # validates setup
+    cases <- gtau_model_cases()
+    if (!models %in% names(cases)) {
+        stop("Unknown models case '", models, "'. Available: ",
+             paste(names(cases), collapse = ", "), " (see gtau_model_cases()).")
+    }
+    mc <- cases[[models]]
     list(
         setup = setup, dgm_name = "linear_weibull",
         n = n, n_test = n_test, alpha = alpha,
@@ -25,9 +51,11 @@ gtau_study_cfg <- function(setup, n, n_test, alpha = 0.1) {
         dgm_parK = dgm$par,
         tau_grid = c(0, dgm$change_times),           # 0, 3, 6
         delta_grid = dgm$delta_grid,                 # per-setup tilt grid
-        # models: correctly-specified Cox everywhere; regression Xi (multiclass
-        # is invalid once g_tau != 1, so xgb_reg uniformly across ALL arms)
-        model.pred = "cox", model.C = "cox", model.S = "cox", model.Xi = "xgb_reg",
+        # models from the case registry; Xi is always a REGRESSION learner
+        # (multiclass is invalid once g_tau != 1)
+        models = models, needs_rsf = isTRUE(mc$needs_rsf),
+        model.pred = mc$model.pred, model.C = mc$model.C,
+        model.S = mc$model.S, model.Xi = mc$model.Xi,
         theta_grid_AIPCW = seq(0, 0.5, by = 0.01),
         train_ratio = 0.5, trim.C = 0.05,
         # variable names
@@ -54,14 +82,17 @@ gtau_cfg_check <- function(cfg) {
     invisible(cfg)
 }
 
-## Canonical output path of the study (relative to `results_root`), exactly the
-## sprintf the driver has always used. The collector reuses it under
-## results/osg/<experiment>/collected/.
+## Canonical output path of the study (relative to `results_root`). For the
+## default models case ("cox") this is exactly the legacy sprintf — existing
+## files keep their names. Non-default cases get a "_<models>" tag so runs
+## under different model configurations can never overwrite each other.
 gtau_sensitivity_filename <- function(setup, R, n, n_test, alpha,
-                                      results_root = "results") {
+                                      results_root = "results",
+                                      models = "cox") {
+    tag <- if (identical(models, "cox")) "" else paste0("_", models)
     file.path(results_root, setup, "gtau_tilt",
-              sprintf("gtau_tilt_sensitivity_R%d_n%d_ntest%d_alpha%s.rds",
-                      R, n, n_test, format(alpha)))
+              sprintf("gtau_tilt_sensitivity_R%d_n%d_ntest%d_alpha%s%s.rds",
+                      R, n, n_test, format(alpha), tag))
 }
 
 ## ------------------------- Calibration wrapper -----------------------
@@ -194,6 +225,9 @@ build_gtau_result_object <- function(rows_list, cfg, R,
         out$config$T_max <- cfg$T_max
         out$config$support_upper <- cfg$T_max
     }
+    # models case recorded only when non-default (same schema-stability rule;
+    # the individual model.pred/C/S/Xi fields are always present above)
+    if (!identical(cfg$models, "cox")) out$config$models <- cfg$models
     if (!is.null(meta_extra)) out$meta <- c(out$meta, meta_extra)
     out
 }

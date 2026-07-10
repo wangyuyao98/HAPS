@@ -49,13 +49,17 @@ if (!requireNamespace("xgboost", quietly = TRUE)) {
 }
 
 ## ----------------------------- Config --------------------------------
-## CLI: R n n_test [setup]   with setup in {linWB1 (default), linWB2}.
+## CLI: R n n_test [setup] [models]
+## setup in {linWB1 (default), linWB2}; models = a case from gtau_model_cases()
+## in src/gtau_tilt_core.R ("cox" default = all completed runs; non-default
+## cases are tagged into the output filename so they never overwrite).
 ## linWB1 = original paper DGM1 (unbounded support; widest set from the training
 ## grid; positivity via trim.C -- see docs/dgm_positivity_notes.md).
 ## linWB2 = positivity-respecting DGM (T truncated at T_max = 20; retuned
 ## censoring; widest candidate set = (tau, T_max], so Algorithm 1 is feasible
 ## by construction).
 setup  <- "linWB1"
+models <- "cox"
 
 R      <- 200
 n      <- 1000
@@ -66,12 +70,13 @@ if (length(args) >= 1L && nzchar(args[[1L]])) R      <- as.integer(args[[1L]])
 if (length(args) >= 2L && nzchar(args[[2L]])) n      <- as.integer(args[[2L]])
 if (length(args) >= 3L && nzchar(args[[3L]])) n_test <- as.integer(args[[3L]])
 if (length(args) >= 4L && nzchar(args[[4L]])) setup  <- args[[4L]]
+if (length(args) >= 5L && nzchar(args[[5L]])) models <- args[[5L]]
 stopifnot(is.finite(R), R >= 1L, is.finite(n), n >= 10L, is.finite(n_test), n_test >= 10L)
 
 ## All study constants (models, grids, DGM parameters, variable names) come from
 ## the shared cfg builder -- the single source of truth used by the OSG worker
 ## too (src/gtau_tilt_core.R).
-cfg        <- gtau_study_cfg(setup, n, n_test)   # validates setup; alpha = 0.1
+cfg        <- gtau_study_cfg(setup, n, n_test, models = models)   # validates setup+models; alpha = 0.1
 alpha      <- cfg$alpha
 tau_grid   <- cfg$tau_grid
 delta_grid <- cfg$delta_grid
@@ -79,8 +84,8 @@ delta_grid <- cfg$delta_grid
 folder <- file.path("results", setup, "gtau_tilt")
 if (!dir.exists(folder)) dir.create(folder, recursive = TRUE)
 
-cat(sprintf("Gtau tilt sensitivity | setup=%s | R=%d n=%d n_test=%d | tau={%s} | delta={%s}\n",
-            setup, R, n, n_test, paste(tau_grid, collapse=","), paste(delta_grid, collapse=",")))
+cat(sprintf("Gtau tilt sensitivity | setup=%s models=%s | R=%d n=%d n_test=%d | tau={%s} | delta={%s}\n",
+            setup, models, R, n, n_test, paste(tau_grid, collapse=","), paste(delta_grid, collapse=",")))
 
 ## --------------------------- Seeds -----------------------------------
 set.seed(123)
@@ -93,7 +98,7 @@ seeds_split <- sample(1e7, R, replace = FALSE)
 ## of results/ during a long run must not be able to lose finished work), and
 ## partial results are checkpointed every `checkpoint_every` replications so a
 ## crash costs minutes, not hours. meta$complete marks the final save.
-outfile <- gtau_sensitivity_filename(setup, R, n, n_test, alpha)
+outfile <- gtau_sensitivity_filename(setup, R, n, n_test, alpha, models = models)
 checkpoint_every <- 10L
 save_results <- function(rows_list, completed_reps, elapsed_sec) {
     dir.create(dirname(outfile), recursive = TRUE, showWarnings = FALSE)

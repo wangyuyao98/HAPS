@@ -34,6 +34,8 @@ opts <- list(
     n_test          = 3000L,
     total_r         = 200L,
     alpha           = 0.1,
+    models          = "cox",       # a case from gtau_model_cases(); non-default
+                                   # cases are tagged into result paths/filenames
     shard_map       = "300:25,500:20,1000:10",
     memory_map      = "300:2GB,500:2GB,1000:3GB",
     disk_map        = "all:2GB",
@@ -88,6 +90,10 @@ parse_map <- function(x, what, sizes) {
 
 setups <- parse_csv(opts$setups)
 for (s in setups) invisible(get_linWB_dgm_par(s))    # validates each setup
+if (!opts$models %in% names(gtau_model_cases())) {
+    stop("Unknown --models case '", opts$models, "'. Available: ",
+         paste(names(gtau_model_cases()), collapse = ", "))
+}
 sizes  <- as.integer(parse_csv(opts$sample_sizes))
 stopifnot(all(is.finite(sizes)), all(sizes >= 10L))
 shard_size <- vapply(parse_map(opts$shard_map, "--shard-map", sizes),
@@ -143,14 +149,20 @@ for (setup in setups) {
         for (reps in shards) {
             job_counter <- job_counter + 1L
             job_id <- sprintf("%04d", job_counter)
-            relpath <- file.path(setup, sprintf("n%d", n),
+            cell_dir <- if (identical(opts$models, "cox")) {
+                file.path(setup, sprintf("n%d", n))       # legacy layout
+            } else {
+                file.path(setup, opts$models, sprintf("n%d", n))
+            }
+            relpath <- file.path(cell_dir,
                                  sprintf("job_%s_reps_%03d_%03d.rds",
                                          job_id, reps[[1L]], reps[[length(reps)]]))
             config <- list(
                 job_id = job_id,
                 experiment_name = opts$experiment_name,
                 driver_script = "gtau_job.R",
-                setup = setup, n = n, n_test = opts$n_test, alpha = opts$alpha,
+                setup = setup, models = opts$models,
+                n = n, n_test = opts$n_test, alpha = opts$alpha,
                 total_R = opts$total_r,
                 rep_start = reps[[1L]], rep_end = reps[[length(reps)]],
                 rep_count = length(reps), rep_indices = reps,
@@ -161,7 +173,8 @@ for (setup in setups) {
             )
             saveRDS(config, file.path(configs_dir, sprintf("job_%s.rds", job_id)))
             manifest[[job_counter]] <- data.frame(
-                job_id = job_id, setup = setup, n = n, n_test = opts$n_test,
+                job_id = job_id, setup = setup, models = opts$models,
+                n = n, n_test = opts$n_test,
                 alpha = opts$alpha, total_R = opts$total_r,
                 rep_start = reps[[1L]], rep_end = reps[[length(reps)]],
                 rep_count = length(reps), result_relpath = relpath,
@@ -200,8 +213,8 @@ dir.create(file.path(root_dir, "logs", "osg", opts$experiment_name, "condor"),
 
 ## ----------------------------- Summary --------------------------------
 cells <- unique(manifest[, c("setup", "n")])
-cat(sprintf("Prepared experiment '%s': %d jobs over %d cells (%s), reps %s of total_R=%d.\n",
-            opts$experiment_name, nrow(manifest), nrow(cells),
+cat(sprintf("Prepared experiment '%s' (models=%s): %d jobs over %d cells (%s), reps %s of total_R=%d.\n",
+            opts$experiment_name, opts$models, nrow(manifest), nrow(cells),
             paste(sprintf("%s/n%d", cells$setup, cells$n), collapse = ", "),
             if (length(rep_subset) == opts$total_r) "1..all"
             else paste(range(rep_subset), collapse = ".."),

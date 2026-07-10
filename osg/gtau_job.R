@@ -64,9 +64,9 @@ suppressMessages(library(survival))
 if (!requireNamespace("xgboost", quietly = TRUE)) {
     stop("Package 'xgboost' is required (model.Xi = 'xgb_reg').")
 }
-## NOTE: unlike the local driver, the worker does NOT attach randomForestSRC
-## or dplyr — no rsf model is fit and dplyr is never exercised on this path,
-## so the container only needs R + survival + xgboost.
+## NOTE: unlike the local driver, the worker does NOT attach dplyr (never
+## exercised on this path); randomForestSRC is attached below only when the
+## models case needs it.
 
 ## ------------------------- Config validation --------------------------
 config <- readRDS(config_path)
@@ -85,7 +85,17 @@ stopifnot(
     config$rep_indices[[config$rep_count]] == config$rep_end
 )
 
-cfg <- gtau_study_cfg(config$setup, config$n, config$n_test, config$alpha)
+## models case: configs prepared before the model-case feature carry no field
+## and are the default all-cox case.
+models <- if (!is.null(config$models)) config$models else "cox"
+cfg <- gtau_study_cfg(config$setup, config$n, config$n_test, config$alpha,
+                      models = models)
+if (isTRUE(cfg$needs_rsf)) {
+    if (!requireNamespace("randomForestSRC", quietly = TRUE)) {
+        stop("Models case '", models, "' needs package 'randomForestSRC'.")
+    }
+    suppressMessages(library(randomForestSRC))
+}
 
 ## Drift guard: the registry values embedded at prepare time must match what
 ## this worker's copy of src/ resolves — otherwise the shard would silently
@@ -100,8 +110,8 @@ for (fld in c("tau_grid", "delta_grid", "change_times", "rho", "T_max")) {
     }
 }
 
-cat(sprintf("gtau shard | exp=%s job=%s | setup=%s n=%d n_test=%d alpha=%s | reps %d-%d (%d of total_R=%d)\n",
-            config$experiment_name, config$job_id, config$setup, config$n,
+cat(sprintf("gtau shard | exp=%s job=%s | setup=%s models=%s n=%d n_test=%d alpha=%s | reps %d-%d (%d of total_R=%d)\n",
+            config$experiment_name, config$job_id, config$setup, models, config$n,
             config$n_test, format(config$alpha), config$rep_start, config$rep_end,
             config$rep_count, config$total_R))
 
@@ -125,7 +135,8 @@ elapsed <- proc.time()[["elapsed"]] - t0
 ## the serial driver does, so the combined `results` table is identical.
 save_obj <- list(
     job = list(job_id = config$job_id, experiment_name = config$experiment_name,
-               setup = config$setup, n = config$n, n_test = config$n_test,
+               setup = config$setup, models = models,
+               n = config$n, n_test = config$n_test,
                alpha = config$alpha, total_R = config$total_R,
                rep_start = config$rep_start, rep_end = config$rep_end,
                rep_indices = config$rep_indices,

@@ -103,6 +103,28 @@ rsync -av <ap-user>@<access-point>:<repo-path>/results/osg/gtau_grid/collected/ 
 Rscript main_plot_gtau_tilt_sensitivity.R 200 1000 3000 0.1 linWB2 results/osg/gtau_grid/collected
 ```
 
+## Model cases (running with ML nuisances later)
+
+The nuisance/prediction models are selected by a **model case** from
+`gtau_model_cases()` in `src/gtau_tilt_core.R` (single registry serving the
+local driver, prepare, worker, collector, and plots). `"cox"` is the default
+and reproduces all existing files under their existing names. Non-default
+cases (e.g. `rsfG_xgbS`: RSF censoring + XGB-Cox S_k) are:
+
+- tagged into the canonical FILENAME (`..._alpha0.1_<models>.rds`) and the OSG
+  raw-result paths (`<setup>/<models>/n<N>/...`), so runs under different
+  models can never overwrite each other;
+- recorded in `config$models` (non-default only) next to the always-present
+  `model.pred/C/S/Xi` fields;
+- selected via `--models <case>` at prepare time (5th positional arg of the
+  local driver; 7th arg of the plot script).
+
+**Each new model case needs its own probe first** — ML nuisances change the
+memory/runtime profile, so re-derive `MEMORY_MAP` from a
+`--models <case> --rep-subset 1` probe before production. Cases needing DDH
+(python/torch) would also need a new container; the current dCP1.sif covers
+R + survival + xgboost + randomForestSRC.
+
 ## Reproducibility notes
 
 - Same seeds as the local driver ⇒ same replications. Bitwise identity across
